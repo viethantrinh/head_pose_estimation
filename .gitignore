@@ -1,0 +1,36 @@
+# Data folders
+save_model/
+data/
+work_dir/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyTorch model files
+*.pt
+*.pth
+*.npz
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.venv/
+env/
+venv/
+
+# Logs
+*.log
