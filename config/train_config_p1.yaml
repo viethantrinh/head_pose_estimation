@@ -39,7 +39,7 @@ base_lr: 0.001
 weight_decay: 1.0e-08
 
 # Learning Rate Schedule
-step: [70, 110, 150]
+step: [50, 90, 130]
 # step: [50, 90, 130]
 # Alternative step schedules (commented out)
 # step: [15, 40, 55, 80]

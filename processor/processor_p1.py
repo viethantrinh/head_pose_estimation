@@ -7,7 +7,7 @@ import yaml
 import torch.nn.functional as F
 import numpy as np
 
-from model.ca_model import Model
+from model.ca_model_2 import Model
 from utils.util import GradualWarmupScheduler, log, init_seed, worker_init_fn
 from torch import optim
 from feeder import dataset_p1 as dataset
@@ -108,7 +108,7 @@ class Processor:
             self.optimizer,
             milestones=self.arg.step if hasattr(
                 self.arg, 'step') else [10, 20],
-            gamma=0.1
+            gamma=0.5
         )
 
         self.lr_scheduler = GradualWarmupScheduler(

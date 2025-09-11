@@ -144,8 +144,6 @@ class BaseModel(nn.Module):
         x3, spatial_att = self.attention(x3)
         return x1, x2, x3
 
-# [Keeping your existing ConvBlock2d, SpatialAttention, ChannelAttention, CombinedAttention, 
-# ConvolutionalSelfAttention, and BaseModel classes unchanged]
 
 class CrossAttention(nn.Module):
     """Cross attention module where one feature map attends to another"""
