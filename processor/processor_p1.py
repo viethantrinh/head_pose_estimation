@@ -108,7 +108,7 @@ class Processor:
             self.optimizer,
             milestones=self.arg.step if hasattr(
                 self.arg, 'step') else [10, 20],
-            gamma=0.5
+            gamma=0.1
         )
 
         self.lr_scheduler = GradualWarmupScheduler(
