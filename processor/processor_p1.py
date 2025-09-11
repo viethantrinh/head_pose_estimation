@@ -7,7 +7,7 @@ import yaml
 import torch.nn.functional as F
 import numpy as np
 
-from model.ca_model_2 import Model
+from model.swin_1 import Model
 from utils.util import GradualWarmupScheduler, log, init_seed, worker_init_fn
 from torch import optim
 from feeder import dataset_p1 as dataset
