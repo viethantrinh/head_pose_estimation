@@ -7,7 +7,7 @@ import yaml
 import torch.nn.functional as F
 import numpy as np
 
-from model.swin_1 import Model
+from model.ca_model_2 import Model
 from utils.util import GradualWarmupScheduler, log, init_seed, worker_init_fn
 from torch import optim
 from feeder import dataset_p1 as dataset
@@ -27,7 +27,7 @@ class Processor:
         self.arg = arg
 
         # 1. Fix the seed to 1
-        init_seed(0)
+        
 
         # 2. Save the current information of config file into a file
         # self.save_train_config_file()
