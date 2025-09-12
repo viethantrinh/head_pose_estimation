@@ -180,11 +180,11 @@ class CrossAttention(nn.Module):
         v = v.reshape(batch_size, H*W, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
         
         # Compute attention
-        attn = (q @ k.transpose(-2, -1)) * self.scale  # [B, num_heads, H*W, H*W]
+        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B, num_heads, H*W, H*W]
         attn = F.softmax(attn, dim=-1)
         
         # Apply attention weights
-        x = (attn @ v).transpose(1, 2).reshape(batch_size, H*W, C)  # [B, H*W, C]
+        x = torch.matmul(attn, v).transpose(1, 2).reshape(batch_size, H*W, C)  # [B, H*W, C]
         x = self.out_proj(x)
         
         # Reshape back to spatial dimensions
@@ -340,6 +340,7 @@ class Model(nn.Module):
         
         # 4. Multibin classification and regression
         x5 = self.pool(x4).flatten(1)  # Pool down to (B, 144, 1, 1) and flatten to (B, 144)
+
         
         # 5. Predict angle bins
         yaw_class = self.yaw_class(x5)

@@ -10,7 +10,7 @@ import sys
 import argparse
 import random
 
-from model.cross_stream_fusion import Model
+from model.ca_model_all import Model
 from utils.util import GradualWarmupScheduler, log, init_seed, worker_init_fn
 from torch import optim
 from feeder import dataset_p1 as dataset
@@ -32,7 +32,7 @@ class ProcessorTest:
         self.arg = arg
 
         # 1. Fix the seed to 1
-        init_seed(4)
+        
 
         # 2. Save the current information of config file into a file
         # self.save_train_config_file()
