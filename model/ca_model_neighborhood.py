@@ -5,7 +5,6 @@ import numpy as np
 from torch import nn
 
 
-
 class ConvBlock2d(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, activation='gelu'):
         super(ConvBlock2d, self).__init__()
@@ -234,13 +233,13 @@ class NeighborhoodFusionTransformer(nn.Module):
         super(NeighborhoodFusionTransformer, self).__init__()
         
         # Bi-directional cross-attention for each neighborhood pair
-        # Part 1 has neighbors 2 and 4
-        # Part 2 has neighbors 1 and 3
-        # Part 3 has neighbors 2 and 4
-        # Part 4 has neighbors 1 and 3
+        # Part 1 has neighbors 2 and 3
+        # Part 2 has neighbors 1 and 4
+        # Part 3 has neighbors 1 and 4
+        # Part 4 has neighbors 2 and 3
         self.cross_attn_1_2 = BiDirectionalCrossAttention(dim, num_heads, dropout)
-        self.cross_attn_1_4 = BiDirectionalCrossAttention(dim, num_heads, dropout)
-        self.cross_attn_2_3 = BiDirectionalCrossAttention(dim, num_heads, dropout)
+        self.cross_attn_1_3 = BiDirectionalCrossAttention(dim, num_heads, dropout)
+        self.cross_attn_2_4 = BiDirectionalCrossAttention(dim, num_heads, dropout)
         self.cross_attn_3_4 = BiDirectionalCrossAttention(dim, num_heads, dropout)
         
         # Fusion projection for each part after attending to its neighbors
@@ -286,20 +285,20 @@ class NeighborhoodFusionTransformer(nn.Module):
         
         # Apply bi-directional cross-attention between neighboring parts
         f1_with_2 = self.cross_attn_1_2(f1_seq, f2_seq)
-        f1_with_4 = self.cross_attn_1_4(f1_seq, f4_seq)
-        f1_enhanced = (f1_with_2 + f1_with_4) / 2
+        f1_with_3 = self.cross_attn_1_3(f1_seq, f4_seq)
+        f1_enhanced = (f1_with_2 + f1_with_3) / 2
         
         f2_with_1 = self.cross_attn_1_2(f2_seq, f1_seq)
-        f2_with_3 = self.cross_attn_2_3(f2_seq, f3_seq)
-        f2_enhanced = (f2_with_1 + f2_with_3) / 2
+        f2_with_4 = self.cross_attn_2_4(f2_seq, f4_seq)
+        f2_enhanced = (f2_with_1 + f2_with_4) / 2
         
-        f3_with_2 = self.cross_attn_2_3(f3_seq, f2_seq)
+        f3_with_1 = self.cross_attn_1_3(f3_seq, f1_seq)
         f3_with_4 = self.cross_attn_3_4(f3_seq, f4_seq)
-        f3_enhanced = (f3_with_2 + f3_with_4) / 2
+        f3_enhanced = (f3_with_1 + f3_with_4) / 2
         
-        f4_with_1 = self.cross_attn_1_4(f4_seq, f1_seq)
+        f4_with_2 = self.cross_attn_2_4(f4_seq, f2_seq)
         f4_with_3 = self.cross_attn_3_4(f4_seq, f3_seq)
-        f4_enhanced = (f4_with_1 + f4_with_3) / 2
+        f4_enhanced = (f4_with_2 + f4_with_3) / 2
         
         # Apply fusion projection to each enhanced feature
         f1_fused = self.fusion_proj(f1_enhanced)
@@ -372,6 +371,8 @@ class Model(nn.Module):
         
         # 2. Apply neighborhood fusion with transformer-based bi-directional cross-attention
         x4 = self.neighborhood_fusion(x_features)
+        
+        
         
         # 3. Pooling and prediction
         x5 = self.pool(x4).flatten(1)
