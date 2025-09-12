@@ -9,7 +9,7 @@ work_dir: ./work_dir/protocol_1
 model_saved_name: ./save_model/protocol_1/model
 
 # Model Weights and Checkpoints
-weights_file_extract: ./work_dir/protocol_1/best_ca_model_2_l1_s0/best_model_test2.pt
+weights_file_extract: ./work_dir/protocol_1/best_cvit_l1/best_model_test2.pt
 
 # =============================================================================
 # Dataset Configuration

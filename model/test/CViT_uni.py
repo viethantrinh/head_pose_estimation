@@ -327,7 +327,7 @@ class Model(nn.Module):
         x4 = torch.cat(enhanced_features, dim=1)
         
         # Phần còn lại của model giữ nguyên
-        x4 = self.reduction_conv(x4)
+        # x4 = self.reduction_conv(x4)
         x4 = self.convolutional_self_attention(x4)
         x5 = self.pool(x4).flatten(1)
         

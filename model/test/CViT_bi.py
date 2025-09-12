@@ -147,172 +147,145 @@ class BaseModel(nn.Module):
         x3, spatial_att = self.attention(x3)
         return x1, x2, x3
     
-class BiDirectionalCrossAttention(nn.Module):
-    def __init__(self, dim=144, num_streams=4, num_heads=4, mlp_ratio=4.0, qkv_bias=True, 
-                 drop_rate=0.0, attn_drop_rate=0.0):
-        super().__init__()
-        
-        # Tạo cross-attention modules cho từng cặp streams (i -> j)
-        self.cross_attns = nn.ModuleList()
-        for i in range(num_streams):
-            stream_attns = nn.ModuleList()
-            for j in range(num_streams):
-                if i != j:  # Chỉ tạo cross-attention giữa các streams khác nhau
-                    stream_attns.append(
-                        nn.Sequential(
-                            nn.LayerNorm(dim),
-                            Attention(
-                                dim=dim,
-                                num_heads=num_heads,
-                                qkv_bias=qkv_bias,
-                                attn_drop=attn_drop_rate,
-                                proj_drop=drop_rate
-                            )
-                        )
-                    )
-                else:
-                    stream_attns.append(None)
-            self.cross_attns.append(stream_attns)
-        
-        # MLP sau mỗi cross-attention
-        self.mlps = nn.ModuleList([
-            nn.Sequential(
-                nn.LayerNorm(dim),
-                Mlp(
-                    in_features=dim,
-                    hidden_features=int(dim * mlp_ratio),
-                    drop=drop_rate
-                )
-            ) for _ in range(num_streams)
-        ])
-        
-    def forward(self, streams):
-        batch_size = streams[0].shape[0]
-        num_streams = len(streams)
-        
-        # Chuyển streams về dạng tokens để dễ xử lý
-        tokens = []
-        for stream in streams:
-            # Global average pooling
-            token = stream.mean(dim=(-1, -2))  # [B, C]
-            tokens.append(token)
-        
-        # Bi-directional cross-attention
-        updated_tokens = [token.clone() for token in tokens]  # Copy tokens để lưu kết quả
-        
-        # Bước 1: Áp dụng cross-attention cho mỗi cặp streams
-        cross_attended_tokens = []
-        for i in range(num_streams):
-            cross_attns_for_i = []
-            for j in range(num_streams):
-                if i != j:
-                    # Token của stream i lấy thông tin từ stream j
-                    cross_attn = self.cross_attns[i][j]
-                    
-                    # Tạo input cho cross-attention (target token ở đầu)
-                    cross_input = torch.stack([tokens[i], tokens[j]], dim=1)  # [B, 2, C]
-                    
-                    # Áp dụng attention và chỉ lấy kết quả của token đầu tiên
-                    cross_result = cross_attn(cross_input)[:, 0]  # [B, C]
-                    cross_attns_for_i.append(cross_result)
-            
-            # Tổng hợp tất cả cross-attention results cho stream i
-            if cross_attns_for_i:
-                cross_sum = sum(cross_attns_for_i)
-                cross_attended_tokens.append(tokens[i] + cross_sum)
-            else:
-                cross_attended_tokens.append(tokens[i])
-        
-        # Bước 2: Áp dụng MLP sau cross-attention
-        final_tokens = []
-        for i in range(num_streams):
-            token_with_mlp = cross_attended_tokens[i] + self.mlps[i](cross_attended_tokens[i])
-            final_tokens.append(token_with_mlp)
-        
-        # Chuyển tokens trở lại dạng spatial features
-        enhanced_streams = []
-        for i in range(num_streams):
-            h, w = streams[i].shape[-2:]
-            token_spatial = final_tokens[i].view(batch_size, -1, 1, 1).expand(-1, -1, h, w)
-            enhanced_streams.append(streams[i] + token_spatial)
-            
-        return enhanced_streams
+    
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-
-class Attention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0.0, proj_drop=0.0):
+class CrossAttentionFusion(nn.Module):
+    """
+    Cross-Attention Fusion module inspired by CrossViT paper
+    """
+    def __init__(self, dim=144, num_heads=4, qkv_bias=True, proj_drop=0.1):
         super().__init__()
+        self.dim = dim
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
         
-        self.q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.k = nn.Linear(dim, dim, bias=qkv_bias)
-        self.v = nn.Linear(dim, dim, bias=qkv_bias)
+        # Multi-head attention components for each stream
+        self.q_proj = nn.ModuleList([
+            nn.Linear(dim, dim, bias=qkv_bias) for _ in range(4)
+        ])
+        self.k_proj = nn.ModuleList([
+            nn.Linear(dim, dim, bias=qkv_bias) for _ in range(4)
+        ])
+        self.v_proj = nn.ModuleList([
+            nn.Linear(dim, dim, bias=qkv_bias) for _ in range(4)
+        ])
         
-        self.attn_drop = nn.Dropout(attn_drop)
+        self.attn_drop = nn.Dropout(proj_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
         
-    def forward(self, x):
-        B, N, C = x.shape
+        # Layer norms for each stream
+        self.norm1 = nn.ModuleList([
+            nn.LayerNorm(dim) for _ in range(4)
+        ])
+        self.norm2 = nn.ModuleList([
+            nn.LayerNorm(dim) for _ in range(4)
+        ])
         
-        # Tính toán q, k, v riêng biệt
-        q = self.q(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
-        k = self.k(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
-        v = self.v(x).reshape(B, N, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        # MLP blocks for each stream after attention
+        self.mlp = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(dim, dim * 4),
+                nn.GELU(),
+                nn.Linear(dim * 4, dim),
+                nn.Dropout(proj_drop)
+            ) for _ in range(4)
+        ])
         
-        # Tính attention
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
+        # Final fusion layer
+        self.fusion_norm = nn.LayerNorm(dim)
+        self.fusion_proj = nn.Linear(dim * 4, dim)
         
-        # Áp dụng attention
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-    
-class Mlp(nn.Module):
-    def __init__(self, in_features, hidden_features=None, out_features=None, drop=0.0):
-        super().__init__()
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-        self.fc1 = nn.Linear(in_features, hidden_features)
-        self.act = nn.GELU()
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        self.drop = nn.Dropout(drop)
+    def forward(self, features_list):
+        B = features_list[0].shape[0]
+        N = features_list[0].shape[2] * features_list[0].shape[3]  # H*W
+        fused_features = []
         
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        x = self.drop(x)
-        return x
+        # Reshape features to token format
+        token_features = []
+        for x in features_list:
+            # Reshape from [B, C, H, W] to [B, H*W, C]
+            tokens = x.flatten(2).transpose(1, 2)
+            token_features.append(tokens)
+        
+        # Cross-attention between each pair of streams
+        for i in range(4):  # For each stream as query
+            tokens_i = token_features[i]
+            tokens_i = self.norm1[i](tokens_i)
+            
+            # Compute query for current stream
+            q = self.q_proj[i](tokens_i).reshape(B, N, self.num_heads, self.dim // self.num_heads).permute(0, 2, 1, 3)
+            
+            # Initialize accumulated attention output
+            attn_out = 0
+            
+            # Attend to all streams (including self)
+            for j in range(4):  # For each stream as key/value
+                tokens_j = token_features[j]
+                tokens_j = self.norm1[j](tokens_j)
+                
+                # Compute key and value for target stream
+                k = self.k_proj[j](tokens_j).reshape(B, N, self.num_heads, self.dim // self.num_heads).permute(0, 2, 1, 3)
+                v = self.v_proj[j](tokens_j).reshape(B, N, self.num_heads, self.dim // self.num_heads).permute(0, 2, 1, 3)
+                
+                # Compute attention
+                attn = (q @ k.transpose(-2, -1)) * self.scale
+                attn = attn.softmax(dim=-1)
+                attn = self.attn_drop(attn)
+                
+                # Apply attention to values
+                x_ij = (attn @ v).transpose(1, 2).reshape(B, N, self.dim)
+                attn_out += x_ij / 4  # Average across all streams
+            
+            # Project output and apply residual connection
+            attn_out = self.proj(attn_out)
+            attn_out = self.proj_drop(attn_out)
+            tokens_i = tokens_i + attn_out
+            
+            # Apply MLP and second residual
+            tokens_i = tokens_i + self.mlp[i](self.norm2[i](tokens_i))
+            
+            # Reshape back to feature map format [B, C, H, W]
+            H, W = features_list[i].shape[2], features_list[i].shape[3]
+            fused_feature = tokens_i.transpose(1, 2).reshape(B, self.dim, H, W)
+            fused_features.append(fused_feature)
+        
+        # Final fusion of all attended features
+        # Convert to tokens for final fusion
+        final_tokens = [f.flatten(2).transpose(1, 2) for f in fused_features]
+        final_tokens = [self.fusion_norm(tokens) for tokens in final_tokens]
+        final_tokens = torch.cat(final_tokens, dim=-1)  # [B, N, C*4]
+        
+        # Project to original dimension
+        final_tokens = self.fusion_proj(final_tokens)  # [B, N, C]
+        
+        # Reshape back to feature map
+        H, W = features_list[0].shape[2], features_list[0].shape[3]
+        final_feature = final_tokens.transpose(1, 2).reshape(B, self.dim, H, W)
+        
+        return final_feature
     
 class Model(nn.Module):
     def __init__(self):
         super(Model, self).__init__()
         
-        # Giữ nguyên các thành phần khác
+        # Define the backbone
         self.base_model = BaseModel()
-        self.reduction_conv = nn.Sequential(
-            nn.Conv2d(in_channels=144 * 4, out_channels=144, kernel_size=1, padding=0),
-            nn.BatchNorm2d(144),
-            nn.GELU()
-        )
+        
+        # Replace the fusion method with CrossViT-inspired cross-attention fusion
+        self.cross_attention_fusion = CrossAttentionFusion(dim=144, num_heads=4)
+        
+        # Define the self attention part (kept from original model)
         self.convolutional_self_attention = ConvolutionalSelfAttention(in_channels=144)
+        
+        # Define the adaptive pooling for desired output size
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
         
-        # Thêm bi-directional cross-attention
-        self.bidirectional_cross_attn = BiDirectionalCrossAttention(
-            dim=144, 
-            num_streams=4,
-            num_heads=4
-        )
-        
-        # Positional embeddings
+        # Define the position embedding
         self.patch_pos_embed = nn.ParameterList()
         for i in range(4):
             pos = torch.zeros(1, 144)
@@ -322,35 +295,38 @@ class Model(nn.Module):
                 else:
                     pos[0, d] = np.cos(i / (10000 ** (2 * (d // 2) / 144)))
             self.patch_pos_embed.append(nn.Parameter(pos, requires_grad=True))
-        
-        # Output heads
+            
+        # Define the fully connected layer for yaw
         self.yaw_class = nn.Linear(144, 66)
-        self.pitch_class = nn.Linear(144, 66)
-        self.roll_class = nn.Linear(144, 66)
         
+        # Define the fully connected layer for pitch
+        self.pitch_class = nn.Linear(144, 66)
+        
+        # Define the fully connected layer for roll
+        self.roll_class = nn.Linear(144, 66)
+
     def forward(self, x_parts):
         x_features = []
         
-        # 1. Extract features from each stream
+        # 1. Go through 4 streams
         for i in range(4):
-            _, _, x3 = self.base_model(x_parts[i])
+            _, _, x3 = self.base_model(x_parts[i]) # 1.1. Go through backbone - now is (B, 144, 8, 8)
             
-            # Add positional embedding
-            pos_embed = self.patch_pos_embed[i]
-            pos_embed = pos_embed[:, :, None, None].expand(-1, -1, 8, 8)
+            pos_embed = self.patch_pos_embed[i] # Get the positional embedding
+            pos_embed = pos_embed[:, :, None, None].expand(-1, -1, 8, 8) # [1, 144, 8, 8]
+            
+            # 1.2. Add position embedding in this stream
             x3 = x3 + pos_embed
             
             x_features.append(x3)
         
-        # 2. Apply bi-directional cross-attention
-        enhanced_features = self.bidirectional_cross_attn(x_features)
+        # 2. Use CrossViT fusion instead of concatenation + conv reduction
+        x4 = self.cross_attention_fusion(x_features)
         
-        # 3. Concatenate enhanced features
-        x4 = torch.cat(enhanced_features, dim=1)
-        
-        # 4. Continue with the rest of the model
-        x4 = self.reduction_conv(x4)
+        # 3. Apply self-attention (kept from original model)
         x4 = self.convolutional_self_attention(x4)
+        
+        # 4. Multibin classification and regression
         x5 = self.pool(x4).flatten(1)
         
         yaw_class = self.yaw_class(x5)
