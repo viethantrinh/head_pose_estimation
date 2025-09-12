@@ -3,315 +3,340 @@ import torch.nn.functional as F
 import numpy as np
 from torch import nn
 
-class PatchEmbedding(nn.Module):
-    def __init__(self, img_size=64, patch_size=8, in_channels=3, embed_dim=144):
-        super(PatchEmbedding, self).__init__()
-        self.img_size = img_size
-        self.patch_size = patch_size
-        self.num_patches = (img_size // patch_size) ** 2
-        
-        # Thay thế CNN bằng patch embedding
-        self.patch_embed = nn.Conv2d(in_channels, embed_dim, 
-                                   kernel_size=patch_size, stride=patch_size)
-        self.norm = nn.LayerNorm(embed_dim)
-        
+class ConvBlock2d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, activation='gelu'):
+        super(ConvBlock2d, self).__init__()
+        self.conv = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, padding=padding)
+        self.norm = nn.BatchNorm2d(num_features=out_channels)
+        if activation == 'gelu':
+            self.act = nn.GELU()
+        elif activation == 'sigmoid':
+            self.act = nn.Sigmoid()
+        elif activation == 'tanh':
+            self.act = nn.Tanh()
+        else:
+            self.act = nn.Identity()
+
     def forward(self, x):
-        # x: (B, 3, 64, 64) -> (B, 144, 8, 8) -> (B, 144, 64) -> (B, 64, 144)
-        x = self.patch_embed(x)  # (B, 144, 8, 8)
-        x = x.flatten(2).transpose(1, 2)  # (B, 64, 144)
+        x = self.conv(x)
         x = self.norm(x)
+        x = self.act(x)
         return x
 
-class TransformerEncoderLayer(nn.Module):
-    def __init__(self, d_model, nhead, dim_feedforward, dropout=0.1):
-        super(TransformerEncoderLayer, self).__init__()
-        self.self_attn = nn.MultiheadAttention(d_model, nhead, 
-                                             dropout=dropout, batch_first=True)
+class SpatialAttention(nn.Module):
+    def __init__(self, in_channels):
+        super(SpatialAttention, self).__init__()
+        self.conv1 = ConvBlock2d(in_channels=in_channels, out_channels=16, kernel_size=3, padding=1)
+        self.conv2 = ConvBlock2d(in_channels=16, out_channels=1, kernel_size=3, padding=1, activation='no')
+        self.sigmoid = nn.Sigmoid()
+        self.bn = nn.BatchNorm2d(1)
+
+    def forward(self, x):
+        att = self.conv1(x)
+        att = self.conv2(att)
+        att = self.bn(att)
+        att = self.sigmoid(att)
+        return x * att, att
+
+class ChannelAttention(nn.Module):
+    def __init__(self, in_channels, reduction=16):
+        super(ChannelAttention, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.fc1 = nn.Linear(in_channels, in_channels // reduction)
+        self.fc2 = nn.Linear(in_channels // reduction, in_channels)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        batch_size, channels, _, _ = x.size()
+        x_pool = self.avg_pool(x).view(batch_size, channels)
+        x_fc = F.relu(self.fc1(x_pool))
+        x_att = self.sigmoid(self.fc2(x_fc)).view(batch_size, channels, 1, 1)
+        return x * x_att
+
+class CombinedAttention(nn.Module):
+    def __init__(self, in_channels):
+        super(CombinedAttention, self).__init__()
+        self.spatial = SpatialAttention(in_channels)
+        self.channel = ChannelAttention(in_channels)
+
+    def forward(self, x):
+        x = self.channel(x)
+        x, spatial_att = self.spatial(x)
+        return x, spatial_att
+
+class ConvolutionalSelfAttention(nn.Module):
+    def __init__(self, in_channels, kernel_size=3, padding=1):
+        super(ConvolutionalSelfAttention, self).__init__()
+        self.in_channels = in_channels
+        self.query_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=kernel_size, padding=padding)
+        self.key_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=kernel_size, padding=padding)
+        self.value_conv = nn.Conv2d(in_channels, in_channels, kernel_size=kernel_size, padding=padding)
+        self.gamma = nn.Parameter(torch.zeros(1))
+        self.softmax = nn.Softmax(dim=-1)
+        nn.init.kaiming_normal_(self.query_conv.weight, mode='fan_out', nonlinearity='relu')
+        nn.init.kaiming_normal_(self.key_conv.weight, mode='fan_out', nonlinearity='relu')
+        nn.init.kaiming_normal_(self.value_conv.weight, mode='fan_out', nonlinearity='relu')
+        if self.query_conv.bias is not None:
+            nn.init.zeros_(self.query_conv.bias)
+            nn.init.zeros_(self.key_conv.bias)
+            nn.init.zeros_(self.value_conv.bias)
+
+    def forward(self, x):
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            raise ValueError("ConvolutionalSelfAttention input contains NaN or Inf values.")
+        batch_size, C, H, W = x.size()
+        q = self.query_conv(x).view(batch_size, -1, H * W)
+        k = self.key_conv(x).view(batch_size, -1, H * W)
+        v = self.value_conv(x).view(batch_size, C, H * W)
+        energy = torch.bmm(q.transpose(1, 2), k)
+        attention = self.softmax(energy)
+        out = torch.bmm(v, attention.transpose(1, 2))
+        out = out.view(batch_size, C, H, W)
+        if torch.isnan(out).any() or torch.isinf(out).any():
+            raise ValueError("ConvolutionalSelfAttention output contains NaN or Inf values.")
+        out = self.gamma * out + x
+        return out
+
+class BaseModel(nn.Module):
+    def __init__(self):
+        super(BaseModel, self).__init__()
+        self.conv11 = ConvBlock2d(in_channels=3, out_channels=32)
+        self.conv12 = ConvBlock2d(in_channels=32, out_channels=32)
+        self.conv13 = ConvBlock2d(in_channels=3, out_channels=32, kernel_size=1, padding=0, activation='no')
+
+        self.conv21 = ConvBlock2d(in_channels=32, out_channels=128)
+        self.conv22 = ConvBlock2d(in_channels=128, out_channels=128)
+        self.conv23 = ConvBlock2d(in_channels=32, out_channels=128, kernel_size=1, padding=0, activation='no')
+
+        self.conv31 = ConvBlock2d(in_channels=128, out_channels=256)
+        self.conv32 = ConvBlock2d(in_channels=256, out_channels=144)
+        self.conv33 = ConvBlock2d(in_channels=128, out_channels=144, kernel_size=1, padding=0, activation='no')
+
+        self.attention = CombinedAttention(in_channels=144)
         
-        # Feed Forward Network
+        self.pool = nn.AvgPool2d(kernel_size=2)
+        self.dropout = nn.Dropout(p=0.5)
+
+    def forward(self, x):
+        x11 = self.conv11(x)
+        x11 = self.conv12(x11)
+        x12 = self.conv13(x)
+        x1 = x11 + x12
+        
+        x1 = self.dropout(x1)
+        x1_pool = self.pool(x1)
+
+        x21 = self.conv21(x1_pool)
+        x21 = self.conv22(x21)
+        x22 = self.conv23(x1_pool)
+        x2 = x21 + x22
+        
+        x2 = self.dropout(x2)
+        x2_pool = self.pool(x2)
+
+        x31 = self.conv31(x2_pool)
+        x31 = self.conv32(x31)
+        x32 = self.conv33(x2_pool)
+        
+        x3 = x31 + x32
+        x3 = self.dropout(x3)
+        
+        x3, spatial_att = self.attention(x3)
+        return x1, x2, x3
+
+# NEW: Transformer-based Fusion Module
+class TransformerFusionLayer(nn.Module):
+    def __init__(self, embed_dim=144, num_heads=8, dropout=0.1):
+        super(TransformerFusionLayer, self).__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        
+        # Multi-head self-attention
+        self.self_attention = nn.MultiheadAttention(
+            embed_dim, num_heads, dropout=dropout, batch_first=True
+        )
+        
+        # Cross-attention between streams
+        self.cross_attention = nn.MultiheadAttention(
+            embed_dim, num_heads, dropout=dropout, batch_first=True
+        )
+        
+        # Feed-forward network
         self.ffn = nn.Sequential(
-            nn.Linear(d_model, dim_feedforward),
+            nn.Linear(embed_dim, embed_dim * 4),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(dim_feedforward, d_model),
+            nn.Linear(embed_dim * 4, embed_dim),
             nn.Dropout(dropout)
         )
         
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
-        
-    def forward(self, src):
-        # Multi-head self-attention
-        src2, _ = self.self_attn(src, src, src)
-        src = self.norm1(src + self.dropout(src2))
-        
-        # Feed forward
-        src2 = self.ffn(src)
-        src = self.norm2(src + src2)
-        
-        return src
-
-class TransformerEncoder(nn.Module):
-    def __init__(self, embed_dim=144, num_heads=8, num_layers=6, 
-                 mlp_ratio=4, dropout=0.1):
-        super(TransformerEncoder, self).__init__()
-        self.layers = nn.ModuleList([
-            TransformerEncoderLayer(
-                d_model=embed_dim,
-                nhead=num_heads,
-                dim_feedforward=int(embed_dim * mlp_ratio),
-                dropout=dropout
-            ) for _ in range(num_layers)
-        ])
-        
-    def forward(self, x):
-        for layer in self.layers:
-            x = layer(x)
-        return x
-
-class BiDirectionalCrossAttentionLayer(nn.Module):
-    def __init__(self, embed_dim, num_heads, dropout=0.1):
-        super(BiDirectionalCrossAttentionLayer, self).__init__()
-        self.num_streams = 4
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
-        self.head_dim = embed_dim // num_heads
-        
-        # Query, Key, Value projections for each stream
-        self.q_projections = nn.ModuleList([
-            nn.Linear(embed_dim, embed_dim, bias=False) 
-            for _ in range(self.num_streams)
-        ])
-        self.k_projections = nn.ModuleList([
-            nn.Linear(embed_dim, embed_dim, bias=False) 
-            for _ in range(self.num_streams)
-        ])
-        self.v_projections = nn.ModuleList([
-            nn.Linear(embed_dim, embed_dim, bias=False) 
-            for _ in range(self.num_streams)
-        ])
-        
-        # Output projections
-        self.out_projections = nn.ModuleList([
-            nn.Linear(embed_dim, embed_dim) 
-            for _ in range(self.num_streams)
-        ])
-        
-        # Layer norms
-        self.norms1 = nn.ModuleList([nn.LayerNorm(embed_dim) for _ in range(self.num_streams)])
-        self.norms2 = nn.ModuleList([nn.LayerNorm(embed_dim) for _ in range(self.num_streams)])
-        
-        # FFN for each stream
-        self.ffns = nn.ModuleList([
-            nn.Sequential(
-                nn.Linear(embed_dim, embed_dim * 4),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(embed_dim * 4, embed_dim),
-                nn.Dropout(dropout)
-            ) for _ in range(self.num_streams)
-        ])
-        
-        # Cross-stream interaction matrix (learnable)
-        self.interaction_matrix = nn.Parameter(
-            torch.eye(self.num_streams) + 0.1 * torch.randn(self.num_streams, self.num_streams)
-        )
+        # Layer normalizations
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.norm3 = nn.LayerNorm(embed_dim)
         
         self.dropout = nn.Dropout(dropout)
-        self.scale = self.head_dim ** -0.5
         
-    def forward(self, stream_features):
-        batch_size = stream_features[0].size(0)
-        seq_len = stream_features[0].size(1)
+    def forward(self, query, key_value):
+        # Self-attention
+        attn_output, _ = self.self_attention(query, query, query)
+        query = self.norm1(query + self.dropout(attn_output))
         
-        # Generate Q, K, V for all streams
-        queries, keys, values = [], [], []
+        # Cross-attention
+        cross_output, _ = self.cross_attention(query, key_value, key_value)
+        query = self.norm2(query + self.dropout(cross_output))
         
-        for i in range(self.num_streams):
-            q = self.q_projections[i](stream_features[i])
-            k = self.k_projections[i](stream_features[i])
-            v = self.v_projections[i](stream_features[i])
-            
-            # Reshape for multi-head attention: (B, seq_len, embed_dim) -> (B, num_heads, seq_len, head_dim)
-            q = q.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-            k = k.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-            v = v.view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
-            
-            queries.append(q)
-            keys.append(k)
-            values.append(v)
+        # Feed-forward
+        ffn_output = self.ffn(query)
+        query = self.norm3(query + self.dropout(ffn_output))
         
-        enhanced_streams = []
-        
-        # Bi-directional cross-attention with interaction matrix
-        for i in range(self.num_streams):
-            attended_heads = []
-            
-            for head in range(self.num_heads):
-                head_attended = []
-                
-                # Stream i attends to all streams with learned interaction weights
-                for j in range(self.num_streams):
-                    # Attention scores
-                    scores = torch.matmul(queries[i][:, head], keys[j][:, head].transpose(-2, -1)) * self.scale
-                    
-                    # Apply interaction matrix weight
-                    interaction_weight = self.interaction_matrix[i, j]
-                    scores = scores * interaction_weight
-                    
-                    # Softmax
-                    attn_weights = F.softmax(scores, dim=-1)
-                    attn_weights = self.dropout(attn_weights)
-                    
-                    # Apply to values
-                    attended = torch.matmul(attn_weights, values[j][:, head])
-                    head_attended.append(attended)
-                
-                # Combine attended features from all streams for this head
-                combined_head = sum(head_attended) / self.num_streams
-                attended_heads.append(combined_head)
-            
-            # Concatenate all heads: (B, num_heads, seq_len, head_dim) -> (B, seq_len, embed_dim)
-            multi_head_output = torch.cat(attended_heads, dim=-1).transpose(1, 2).contiguous()
-            multi_head_output = multi_head_output.view(batch_size, seq_len, self.embed_dim)
-            
-            # Output projection
-            projected = self.out_projections[i](multi_head_output)
-            
-            # First residual connection and layer norm
-            residual1 = self.norms1[i](stream_features[i] + self.dropout(projected))
-            
-            # FFN
-            ffn_output = self.ffns[i](residual1)
-            
-            # Second residual connection and layer norm
-            enhanced = self.norms2[i](residual1 + self.dropout(ffn_output))
-            
-            enhanced_streams.append(enhanced)
-        
-        return enhanced_streams
+        return query
 
-class MultiStreamCrossAttentionTransformer(nn.Module):
-    def __init__(self, embed_dim=144, num_heads=8, num_layers=3, dropout=0.1):
-        super(MultiStreamCrossAttentionTransformer, self).__init__()
-        self.num_streams = 4
-        self.embed_dim = embed_dim
+class HybridTransformerFusionModule(nn.Module):
+    """
+    Hybrid fusion module that converts CNN features to transformer tokens
+    and applies transformer-based fusion
+    """
+    def __init__(self, in_channels=144, num_streams=4, num_heads=8, num_layers=3):
+        super(HybridTransformerFusionModule, self).__init__()
+        self.in_channels = in_channels
+        self.num_streams = num_streams
         
-        # Bi-directional cross-attention layers
-        self.cross_attention_layers = nn.ModuleList([
-            BiDirectionalCrossAttentionLayer(embed_dim, num_heads, dropout)
+        # Convert 2D features to 1D tokens
+        self.feature_to_token = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+        
+        # Learnable stream tokens
+        self.stream_tokens = nn.Parameter(torch.randn(num_streams, 1, in_channels))
+        
+        # Positional embedding for spatial patches
+        self.spatial_pos_embed = nn.Parameter(torch.randn(1, 64, in_channels))  # 8x8=64 patches
+        
+        # Transformer layers for fusion
+        self.fusion_layers = nn.ModuleList([
+            TransformerFusionLayer(in_channels, num_heads)
             for _ in range(num_layers)
         ])
         
-        # Stream-specific tokens (learnable)
-        self.stream_tokens = nn.Parameter(torch.randn(4, 1, embed_dim))
+        # Final aggregation
+        self.final_norm = nn.LayerNorm(in_channels)
+        self.class_token = nn.Parameter(torch.randn(1, 1, in_channels))
+        
+        # Global attention for final representation
+        self.global_attention = nn.MultiheadAttention(
+            in_channels, num_heads, batch_first=True
+        )
         
     def forward(self, stream_features):
-        # stream_features: List of 4 tensors, each (B, num_patches, embed_dim)
+        """
+        Args:
+            stream_features: List of 4 tensors, each (B, 144, 8, 8)
+        Returns:
+            Fused representation (B, 144)
+        """
         batch_size = stream_features[0].size(0)
         
-        # Add stream-specific tokens
-        enhanced_streams = []
+        # Convert each stream to tokens
+        stream_tokens = []
         for i, features in enumerate(stream_features):
+            # Convert spatial features to tokens: (B, 144, 8, 8) -> (B, 144, 64) -> (B, 64, 144)
+            tokens = self.feature_to_token(features)
+            tokens = tokens.flatten(2).transpose(1, 2)  # (B, 64, 144)
+            
+            # Add spatial positional embedding
+            tokens = tokens + self.spatial_pos_embed
+            
+            # Add stream-specific token at the beginning
             stream_token = self.stream_tokens[i].expand(batch_size, -1, -1)
-            enhanced = torch.cat([stream_token, features], dim=1)
+            tokens = torch.cat([stream_token, tokens], dim=1)  # (B, 65, 144)
+            
+            stream_tokens.append(tokens)
+        
+        # Bi-directional cross-attention fusion
+        enhanced_streams = []
+        for i in range(self.num_streams):
+            query_stream = stream_tokens[i]
+            
+            # Create key-value from all other streams
+            other_streams = [stream_tokens[j] for j in range(self.num_streams) if j != i]
+            key_value = torch.cat(other_streams, dim=1)  # Concatenate all other streams
+            
+            # Apply transformer fusion layers
+            enhanced = query_stream
+            for layer in self.fusion_layers:
+                enhanced = layer(enhanced, key_value)
+            
             enhanced_streams.append(enhanced)
         
-        # Apply bi-directional cross-attention layers
-        for layer in self.cross_attention_layers:
-            enhanced_streams = layer(enhanced_streams)
-            
-        return enhanced_streams
-
-class TransformerFusionModule(nn.Module):
-    def __init__(self, embed_dim=144, num_heads=8):
-        super(TransformerFusionModule, self).__init__()
+        # Global fusion
+        # Concatenate all enhanced streams
+        all_tokens = torch.cat(enhanced_streams, dim=1)  # (B, 65*4, 144)
         
-        # Global fusion attention
-        self.fusion_attention = nn.MultiheadAttention(
-            embed_dim, num_heads, batch_first=True
-        )
-        
-        # Final transformer layers
-        self.final_transformer = TransformerEncoder(
-            embed_dim=embed_dim, 
-            num_heads=num_heads, 
-            num_layers=2
-        )
-        
-        self.norm = nn.LayerNorm(embed_dim)
-        
-        # Class token for final representation
-        self.class_token = nn.Parameter(torch.randn(1, 1, embed_dim))
-        
-    def forward(self, enhanced_streams):
-        batch_size = enhanced_streams[0].size(0)
-        
-        # Concatenate all streams
-        all_features = torch.cat(enhanced_streams, dim=1)  # (B, total_patches, embed_dim)
-        
-        # Add class token
+        # Add global class token
         class_tokens = self.class_token.expand(batch_size, -1, -1)
-        all_features = torch.cat([class_tokens, all_features], dim=1)
+        all_tokens = torch.cat([class_tokens, all_tokens], dim=1)
         
-        # Final transformer processing
-        final_features = self.final_transformer(all_features)
+        # Final global attention
+        final_output, _ = self.global_attention(class_tokens, all_tokens, all_tokens)
+        final_output = self.final_norm(final_output)
         
         # Extract class token as final representation
-        class_representation = final_features[:, 0]  # (B, embed_dim)
-        
-        return class_representation
+        return final_output.squeeze(1)  # (B, 144)
 
+# Modified Model class with Transformer-based fusion
 class Model(nn.Module):
-    def __init__(self, img_size=64, patch_size=8, embed_dim=144, num_heads=8):
+    def __init__(self):
         super(Model, self).__init__()
         
-        # Patch embedding thay vì CNN backbone
-        self.patch_embedding = PatchEmbedding(img_size, patch_size, 3, embed_dim)
+        # Keep the original CNN backbone
+        self.base_model = BaseModel()
         
-        # Positional embedding
-        num_patches = (img_size // patch_size) ** 2
-        self.pos_embedding = nn.Parameter(torch.randn(1, num_patches, embed_dim))
+        # Keep the original positional embedding
+        self.patch_pos_embed = nn.ParameterList()
+        for i in range(4):
+            pos = torch.zeros(1, 144)
+            for d in range(144):
+                if d % 2 == 0:
+                    pos[0, d] = np.sin(i / (10000 ** (2 * (d // 2) / 144)))
+                else:
+                    pos[0, d] = np.cos(i / (10000 ** (2 * (d // 2) / 144)))
+            self.patch_pos_embed.append(nn.Parameter(pos, requires_grad=True))
         
-        # Transformer encoder cho mỗi stream
-        self.transformer_encoder = TransformerEncoder(embed_dim, num_heads, num_layers=6)
+        # NEW: Replace fusion with Transformer-based fusion
+        self.fusion_module = HybridTransformerFusionModule(
+            in_channels=144, 
+            num_streams=4, 
+            num_heads=8, 
+            num_layers=3
+        )
         
-        # Cross-attention giữa streams
-        self.cross_attention = MultiStreamCrossAttentionTransformer(embed_dim, num_heads)
-        
-        # Final fusion
-        self.fusion_module = TransformerFusionModule(embed_dim, num_heads)
-        
-        # Classification heads
-        self.yaw_head = nn.Linear(embed_dim, 66)
-        self.pitch_head = nn.Linear(embed_dim, 66)
-        self.roll_head = nn.Linear(embed_dim, 66)
-        
+        # Keep the original multi-bin classification heads
+        self.yaw_class = nn.Linear(144, 66)
+        self.pitch_class = nn.Linear(144, 66)
+        self.roll_class = nn.Linear(144, 66)
+
     def forward(self, x_parts):
         stream_features = []
         
-        # Process each stream
+        # 1. Process each stream through CNN backbone (unchanged)
         for i in range(4):
-            # Patch embedding
-            patches = self.patch_embedding(x_parts[i])  # (B, num_patches, embed_dim)
+            _, _, x3 = self.base_model(x_parts[i])  # (B, 144, 8, 8)
             
-            # Add positional embedding
-            patches = patches + self.pos_embedding
+            # Add positional embedding (unchanged)
+            pos_embed = self.patch_pos_embed[i]
+            if torch.isnan(pos_embed).any() or torch.isinf(pos_embed).any():
+                raise ValueError(f"Positional embedding for patch {i} contains NaN or Inf values.")
             
-            # Transformer encoding
-            encoded = self.transformer_encoder(patches)
-            stream_features.append(encoded)
+            pos_embed = pos_embed[:, :, None, None].expand(-1, -1, 8, 8)
+            x3 = x3 + pos_embed
+            
+            stream_features.append(x3)
         
-        # Cross-attention between streams
-        enhanced_streams = self.cross_attention(stream_features)
+        # 2. Apply Transformer-based fusion (NEW)
+        fused_features = self.fusion_module(stream_features)  # (B, 144)
         
-        # Final fusion
-        fused_representation = self.fusion_module(enhanced_streams)
+        # 3. Multi-bin classification (unchanged)
+        yaw_class = self.yaw_class(fused_features)
+        pitch_class = self.pitch_class(fused_features)
+        roll_class = self.roll_class(fused_features)
         
-        # Classification
-        yaw = self.yaw_head(fused_representation)
-        pitch = self.pitch_head(fused_representation)
-        roll = self.roll_head(fused_representation)
-        
-        return yaw, pitch, roll
+        return yaw_class, pitch_class, roll_class
