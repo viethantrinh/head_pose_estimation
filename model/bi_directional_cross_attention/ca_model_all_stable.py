@@ -4,8 +4,6 @@ import numpy as np
 
 from torch import nn
 
-
-
 class ConvBlock2d(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, activation='gelu'):
         super(ConvBlock2d, self).__init__()
