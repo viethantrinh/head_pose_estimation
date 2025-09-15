@@ -1,33 +1,28 @@
 # =============================================================================
 # General Configuration
 # =============================================================================
-work_dir: ./work_dir/protocol_1
+work_dir: ./work_dir/protocol_2
 
 # =============================================================================
 # Model Configuration
 # =============================================================================
-model_saved_name: ./save_model/protocol_1/model
+model_saved_name: ./save_model/protocol_2/model
 
 # Model Weights and Checkpoints
-weights_file_extract: ./save_model/protocol_1/model.pt
+weights_file_extract: ./save_model/protocol_2/model.pt
 
 # =============================================================================
 # Dataset Configuration
 # =============================================================================
 # Training Dataset
-train_dataset: Pose_300W_LP
-train_data_path: ./data/resize_300W_LP
-train_file_name: ./file_list/protocol_1/300W_LP.txt
+train_dataset: BIWI_train
+train_data_path: ./data/resize_BIWI
+train_file_name: ./file_list/protocol_2/BIWI_train.txt
 
 # Test Dataset 1 (BIWI)
-test_dataset1: BIWI
+test_dataset1: BIWI_test
 test_data_path1: ./data/resize_BIWI
-test_file_name1: ./file_list/protocol_1/BIWI.txt
-
-# Test Dataset 2 (AFLW2000)
-test_dataset2: AFLW2000
-test_data_path2: ./data/resize_AFLW2000
-test_file_name2: ./file_list/protocol_1/AFLW2000.txt
+test_file_name1: ./file_list/protocol_2/BIWI_test.txt
 
 
 # =============================================================================

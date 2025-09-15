@@ -11,11 +11,11 @@ def get_parser():
     # =============================================================================
     parser.add_argument(
         '--config',
-        default='./config/train_config_p1.yaml',
+        default='./config/train_config_p2.yaml',
         help='path to the configuration file')
     parser.add_argument(
         '--work-dir',
-        default='./work_dir/p1',
+        default='./work_dir/p2',
         help='the work folder for storing results')
 
     # =============================================================================
@@ -37,17 +37,17 @@ def get_parser():
     parser.add_argument(
         '--train-dataset',
         help='Training dataset type.',
-        default='Pose_300W_LP',
+        default='BIWI_train',
         type=str)
     parser.add_argument(
         '--train-data-path',
         help='Directory path for training data.',
-        default='./data/resize_300W_LP',
+        default='./data/resize_BIWI',
         type=str)
     parser.add_argument(
         '--train-file-name',
         help='Path to text file containing relative paths for training examples.',
-        default='./file_list/protocol_1/300W_LP.txt',
+        default='./file_list/protocol_2/BIWI_train.txt',
         type=str)
 
     # =============================================================================
@@ -57,7 +57,7 @@ def get_parser():
     parser.add_argument(
         '--test-dataset1',
         help='Test dataset 1 type.',
-        default='BIWI',
+        default='BIWI_test',
         type=str)
     parser.add_argument(
         '--test-data-path1',
@@ -67,24 +67,7 @@ def get_parser():
     parser.add_argument(
         '--test-file-name1',
         help='Path to text file containing relative paths for test examples 1.',
-        default='./file_list/protocol_1/BIWI.txt',
-        type=str)
-
-    # Test Dataset 2
-    parser.add_argument(
-        '--test-dataset2',
-        help='Test dataset 2 type.',
-        default='AFLW2000',
-        type=str)
-    parser.add_argument(
-        '--test-data-path2',
-        help='Directory path for test data 2.',
-        default='./data/resize_AFLW2000',
-        type=str)
-    parser.add_argument(
-        '--test-file-name2',
-        help='Path to text file containing relative paths for test examples 2.',
-        default='./file_list/protocol_1/AFLW2000.txt',
+        default='./file_list/protocol_2/BIWI_test.txt',
         type=str)
 
     # =============================================================================
