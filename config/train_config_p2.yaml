@@ -43,4 +43,4 @@ step: [50, 90, 130]
 # Batch and Epoch Settings
 batch_size: 100
 test_batch_size: 100
-num_epoch: 1500
+num_epoch: 3000
