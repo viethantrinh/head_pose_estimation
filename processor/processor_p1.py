@@ -7,7 +7,7 @@ import yaml
 import torch.nn.functional as F
 import numpy as np
 
-from model.bi_directional_cross_attention.ca_model_all_stable_light import *
+from model.original_model import *
 from utils.util import GradualWarmupScheduler, log, init_seed, worker_init_fn
 from torch import optim
 from feeder import dataset_p1 as dataset

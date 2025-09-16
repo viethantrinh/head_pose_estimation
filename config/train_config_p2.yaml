@@ -35,7 +35,7 @@ weight_decay: 1.0e-08
 
 # Learning Rate Schedule
 step: [50, 90, 130]
-# step: [50, 90, 130]
+# step: [50, 90, 130, 170, 210]
 # Alternative step schedules (commented out)
 # step: [15, 40, 55, 80]
 # step: [2, 3]
@@ -43,4 +43,4 @@ step: [50, 90, 130]
 # Batch and Epoch Settings
 batch_size: 100
 test_batch_size: 100
-num_epoch: 170
+num_epoch: 1500
