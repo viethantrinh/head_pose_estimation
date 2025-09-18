@@ -112,16 +112,16 @@ def run_training():
 
         # Track tqdm lines to avoid logging them repeatedly
         last_tqdm_line = ""
-        
+
         # Log output with tqdm filtering
         for line in process.stdout:
             line = line.strip()
-            
+
             # Check if line contains tqdm progress (contains % and |)
             is_tqdm = ('|' in line and '%' in line and 'it/s' in line) or \
-                     ('|' in line and '%' in line and 's/it' in line) or \
-                     re.search(r'\d+%\|.*\|', line)
-            
+                ('|' in line and '%' in line and 's/it' in line) or \
+                re.search(r'\d+%\|.*\|', line)
+
             if is_tqdm:
                 # For tqdm lines, only print to console, don't log every update
                 print(f"\r{line}", end="", flush=True)

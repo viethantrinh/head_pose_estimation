@@ -19,15 +19,17 @@ SCRIPT_NAME = "main_p1.py"
 MAX_ITERATIONS = 100  # Số lần training tối đa (set -1 cho vô hạn)
 SLEEP_BETWEEN_RUNS = 10  # Thời gian chờ giữa các lần chạy (giây)
 
+
 def log_message(message, log_file=None):
     """Log message with timestamp"""
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     log_line = f"[{timestamp}] {message}"
     print(log_line)
-    
+
     if log_file:
         with open(log_file, 'a') as f:
             f.write(log_line + '\n')
+
 
 def save_training_results(iteration, log_file):
     """Save training results to lanX folder"""
@@ -67,43 +69,48 @@ def save_training_results(iteration, log_file):
                     dst = os.path.join(result_dir, rel_path)
                     os.makedirs(os.path.dirname(dst), exist_ok=True)
                     shutil.copy2(src, dst)
-                    log_message(f"Đã lưu model {rel_path} vào lan{iteration}", log_file)
+                    log_message(
+                        f"Đã lưu model {rel_path} vào lan{iteration}", log_file)
 
         # Save training summary
         summary_file = os.path.join(result_dir, "training_summary.txt")
         with open(summary_file, 'w') as f:
             f.write(f"Training Iteration: {iteration}\n")
-            f.write(f"Hoàn thành lúc: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(
+                f"Hoàn thành lúc: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write(f"Thư mục làm việc: {work_dir}\n")
             f.write(f"Thư mục kết quả: {result_dir}\n")
 
         log_message(f"Kết quả đã được lưu vào {result_dir}", log_file)
 
+
 def run_training_direct(log_file):
     """Run training with direct output (tqdm works normally)"""
     log_message("Bắt đầu training...", log_file)
-    
+
     try:
         # Run training command directly in terminal
         cmd = ["python", SCRIPT_NAME, "--config", CONFIG_FILE]
         log_message(f"Executing: {' '.join(cmd)}", log_file)
-        
+
         # Use subprocess.run to let training output directly to terminal
         result = subprocess.run(cmd, check=False)
-        
+
         if result.returncode == 0:
             log_message("Training hoàn thành thành công!", log_file)
             return True
         else:
-            log_message(f"Training thất bại với exit code: {result.returncode}", log_file)
+            log_message(
+                f"Training thất bại với exit code: {result.returncode}", log_file)
             return False
-            
+
     except KeyboardInterrupt:
         log_message("Training bị dừng bởi người dùng", log_file)
         return False
     except Exception as e:
         log_message(f"Lỗi trong quá trình training: {str(e)}", log_file)
         return False
+
 
 def check_config_file():
     """Check if config file exists"""
@@ -116,6 +123,7 @@ def check_config_file():
         return False
 
     return True
+
 
 def print_banner():
     """Print banner information"""
@@ -131,6 +139,7 @@ def print_banner():
     """
     print(banner)
 
+
 def main():
     """Main function"""
     print_banner()
@@ -138,7 +147,8 @@ def main():
     # Setup log file
     log_dir = "./work_dir/protocol_1/auto_train_logs"
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"auto_train_clean_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+    log_file = os.path.join(
+        log_dir, f"auto_train_clean_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
     # Check prerequisites
     if not check_config_file():
@@ -147,7 +157,8 @@ def main():
     log_message("Auto Training Script Started", log_file)
     log_message(f"Config file: {CONFIG_FILE}", log_file)
     log_message(f"Training script: {SCRIPT_NAME}", log_file)
-    log_message(f"Max iterations: {'Unlimited' if MAX_ITERATIONS == -1 else MAX_ITERATIONS}", log_file)
+    log_message(
+        f"Max iterations: {'Unlimited' if MAX_ITERATIONS == -1 else MAX_ITERATIONS}", log_file)
 
     iteration = 1
     successful_runs = 0
@@ -169,15 +180,18 @@ def main():
 
             if success:
                 successful_runs += 1
-                log_message(f"Iteration {iteration} hoàn thành thành công trong {duration_str}", log_file)
+                log_message(
+                    f"Iteration {iteration} hoàn thành thành công trong {duration_str}", log_file)
                 # Save results immediately after successful completion
                 save_training_results(iteration, log_file)
             else:
                 failed_runs += 1
-                log_message(f"Iteration {iteration} thất bại sau {duration_str}", log_file)
+                log_message(
+                    f"Iteration {iteration} thất bại sau {duration_str}", log_file)
 
             # Print statistics
-            log_message(f"Thống kê: {successful_runs} thành công, {failed_runs} thất bại", log_file)
+            log_message(
+                f"Thống kê: {successful_runs} thành công, {failed_runs} thất bại", log_file)
 
             # Check if we should continue
             if MAX_ITERATIONS != -1 and iteration >= MAX_ITERATIONS:
@@ -186,7 +200,8 @@ def main():
 
             # Sleep between runs
             if SLEEP_BETWEEN_RUNS > 0:
-                log_message(f"Chờ {SLEEP_BETWEEN_RUNS} giây trước iteration tiếp theo...", log_file)
+                log_message(
+                    f"Chờ {SLEEP_BETWEEN_RUNS} giây trước iteration tiếp theo...", log_file)
                 time.sleep(SLEEP_BETWEEN_RUNS)
 
             iteration += 1
@@ -196,7 +211,9 @@ def main():
     except Exception as e:
         log_message(f"Lỗi không mong đợi: {str(e)}", log_file)
     finally:
-        log_message(f"Auto training kết thúc. Tổng cộng: {successful_runs} thành công, {failed_runs} thất bại", log_file)
+        log_message(
+            f"Auto training kết thúc. Tổng cộng: {successful_runs} thành công, {failed_runs} thất bại", log_file)
+
 
 if __name__ == "__main__":
     main()
