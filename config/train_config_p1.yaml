@@ -35,10 +35,10 @@ test_file_name2: ./file_list/protocol_1/AFLW2000.txt
 # Optimizer Settings - Optimized for better convergence
 # optimizer: AdamW
 base_lr: 0.001 # Increased slightly for faster initial learning
-weight_decay: 1.e-6 # Reduced to prevent over-regularization
+weight_decay: 1.e-8 # Reduced to prevent over-regularization
 
 # Learning Rate Schedule - Optimized based on training analysis
-step: [55, 95, 135, 200] # Earlier and more frequent LR drops
+step: [50, 90, 130] # Earlier and more frequent LR drops
 # Alternative aggressive schedule for faster convergence
 # step: [20, 40, 80, 160]
 # Conservative schedule for stable training
@@ -47,4 +47,4 @@ step: [55, 95, 135, 200] # Earlier and more frequent LR drops
 # Batch and Epoch Settings
 batch_size: 100
 test_batch_size: 100
-num_epoch: 250
+num_epoch: 170

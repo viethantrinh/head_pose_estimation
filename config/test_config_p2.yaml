@@ -1,33 +1,27 @@
 # =============================================================================
 # General Configuration
 # =============================================================================
-work_dir: ./work_dir/protocol_1
+work_dir: ./work_dir/protocol_2
 
 # =============================================================================
 # Model Configuration
 # =============================================================================
-model_saved_name: ./save_model/protocol_1/model
+model_saved_name: ./save_model/protocol_2/model
 
 # Model Weights and Checkpoints
-weights_file_extract: ./work_dir/protocol_1/ca_model_all_stable_l1/best_model_test2.pt
+weights_file_extract: ./work_dir/protocol_2/best/best_model_test1.pt
 # =============================================================================
 # Dataset Configuration
 # =============================================================================
 # Training Dataset
-train_dataset: Pose_300W_LP
-train_data_path: ./data/resize_300W_LP
-train_file_name: ./file_list/protocol_1/300W_LP.txt
+train_dataset: BIWI_train
+train_data_path: ./data/resize_BIWI
+train_file_name: ./file_list/protocol_2/BIWI_train.txt
 
 # Test Dataset 1 (BIWI)
-test_dataset1: BIWI
+test_dataset1: BIWI_test
 test_data_path1: ./data/resize_BIWI
-test_file_name1: ./file_list/protocol_1/BIWI.txt
-
-# Test Dataset 2 (AFLW2000)
-test_dataset2: AFLW2000
-test_data_path2: ./data/resize_AFLW2000
-test_file_name2: ./file_list/protocol_1/AFLW2000.txt
-
+test_file_name1: ./file_list/protocol_2/BIWI_test.txt
 
 # =============================================================================
 # Training Hyperparameters
@@ -38,8 +32,8 @@ base_lr: 0.001
 weight_decay: 1.0e-08
 
 # Learning Rate Schedule
-step: [40, 70, 100, 130]
-# step: [50, 90, 130]
+step: [50, 90, 130]
+# step: [50, 90, 130, 170, 210]
 # Alternative step schedules (commented out)
 # step: [15, 40, 55, 80]
 # step: [2, 3]
@@ -47,4 +41,4 @@ step: [40, 70, 100, 130]
 # Batch and Epoch Settings
 batch_size: 100
 test_batch_size: 100
-num_epoch: 170
+num_epoch: 3000
