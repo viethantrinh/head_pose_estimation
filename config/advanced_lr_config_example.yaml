@@ -1,0 +1,51 @@
+# Advanced Learning Rate Configuration Example
+# Tệp cấu hình mẫu cho các tùy chọn learning rate cải tiến
+
+# Basic training parameters
+base_lr: 0.001
+num_epoch: 50
+batch_size: 32
+test_batch_size: 64
+
+# Learning Rate Scheduler Options
+# Chọn một trong các loại: 'cosine', 'plateau', 'multistep', 'exponential'
+scheduler_type: "cosine"
+
+# Early Stopping Configuration
+patience: 15 # Số epoch không cải thiện trước khi dừng
+min_lr: 1e-7 # Learning rate tối thiểu
+
+# Warm-up Configuration
+warm_up_epoch: 5
+
+# === Cosine Annealing Scheduler (scheduler_type: 'cosine') ===
+T_0: 20 # Chu kỳ restart đầu tiên
+T_mult: 2 # Hệ số nhân cho chu kỳ restart
+
+# === Plateau Scheduler (scheduler_type: 'plateau') ===
+lr_factor: 0.5 # Hệ số giảm LR khi plateau
+lr_patience: 5 # Số epoch chờ trước khi giảm LR
+
+# === MultiStep Scheduler (scheduler_type: 'multistep') ===
+step: [15, 25, 35] # Các epoch để giảm LR
+gamma: 0.5 # Hệ số giảm LR
+
+# === Exponential Scheduler (scheduler_type: 'exponential') ===
+exp_gamma: 0.95 # Hệ số giảm theo hàm mũ
+
+# Optimizer Configuration
+weight_decay: 1e-4
+betas: [0.9, 0.999]
+eps: 1e-8
+
+# Training Configuration
+save_interval: 5
+print_log: true
+
+# Dataset paths (example - adjust according to your setup)
+train_dataset: "Pose_300W_LP"
+test_dataset1: "AFLW2000"
+test_dataset2: "BIWI"
+
+# Device configuration
+device: [0] # GPU ID

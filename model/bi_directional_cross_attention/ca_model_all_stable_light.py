@@ -213,22 +213,17 @@ class BaseModel(nn.Module):
         return x1, x2, x3
 
 class CrossAttention(nn.Module):
-    def __init__(self, dim, num_heads=8, dropout=0.1):
+    def __init__(self, dim, num_heads=8):
         super(CrossAttention, self).__init__()
-        assert dim % num_heads == 0, "dim must be divisible by num_heads"
-
         self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
-
+        head_dim = dim // num_heads
+        self.scale = head_dim ** -0.5
+        
         self.q_proj = nn.Linear(dim, dim)
         self.k_proj = nn.Linear(dim, dim)
         self.v_proj = nn.Linear(dim, dim)
         self.out_proj = nn.Linear(dim, dim)
-
-        self.dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(dim)
-
+        
     def forward(self, query, key_value):
         """
         Args:
@@ -238,46 +233,29 @@ class CrossAttention(nn.Module):
             attended_features: tensor with shape [B, C, H, W]
         """
         batch_size, C, H, W = query.shape
-
-        # Store original query for residual connection
-        residual = query
-
+        
         # Reshape for attention computation
         q = self.q_proj(query.flatten(2).transpose(1, 2))  # [B, H*W, C]
         k = self.k_proj(key_value.flatten(2).transpose(1, 2))  # [B, H*W, C]
         v = self.v_proj(key_value.flatten(2).transpose(1, 2))  # [B, H*W, C]
-
+        
         # Reshape for multi-head attention
-        # [B, num_heads, H*W, head_dim]
-        q = q.reshape(batch_size, H*W, self.num_heads,
-                      self.head_dim).permute(0, 2, 1, 3)
-        k = k.reshape(batch_size, H*W, self.num_heads,
-                      self.head_dim).permute(0, 2, 1, 3)
-        v = v.reshape(batch_size, H*W, self.num_heads,
-                      self.head_dim).permute(0, 2, 1, 3)
-
-        # Compute attention scores with improved numerical stability
-        attn = torch.matmul(q, k.transpose(-2, -1)) * \
-            self.scale  # [B, num_heads, H*W, H*W]
+        q = q.reshape(batch_size, H*W, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)  # [B, num_heads, H*W, C/num_heads]
+        k = k.reshape(batch_size, H*W, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        v = v.reshape(batch_size, H*W, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        
+        # Compute attention
+        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B, num_heads, H*W, H*W]
         attn = F.softmax(attn, dim=-1)
-        attn = self.dropout(attn)  # Apply dropout to attention weights
-
+        
         # Apply attention weights
-        x = torch.matmul(attn, v).transpose(1, 2).reshape(
-            batch_size, H*W, C)  # [B, H*W, C]
+        x = torch.matmul(attn, v).transpose(1, 2).reshape(batch_size, H*W, C)  # [B, H*W, C]
         x = self.out_proj(x)
-
+        
         # Reshape back to spatial dimensions
         x = x.transpose(1, 2).reshape(batch_size, C, H, W)
-
-        # Apply layer normalization and residual connection
-        x_flat = x.flatten(2).transpose(1, 2)  # [B, H*W, C]
-        residual_flat = residual.flatten(2).transpose(1, 2)  # [B, H*W, C]
-        x_flat = self.layer_norm(x_flat + residual_flat)
-        x = x_flat.transpose(1, 2).reshape(batch_size, C, H, W)
-
+        
         return x
-
 
 class BidirectionalCrossAttention(nn.Module):
     def __init__(self, dim, num_heads=8):
