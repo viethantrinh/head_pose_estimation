@@ -7,7 +7,7 @@ import yaml
 import torch.nn.functional as F
 import numpy as np
 
-from model.bcam_gate.bcam_model_light_t1 import Model
+from model.bcam_gate.bcam_model_light_g2 import Model
 from utils.util import GradualWarmupScheduler, log, init_seed, worker_init_fn
 from torch import optim
 from feeder import dataset_p2 as dataset
