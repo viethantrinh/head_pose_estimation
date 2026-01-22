@@ -7,7 +7,7 @@ import yaml
 import torch.nn.functional as F
 import numpy as np
 
-from model.bi_directional_cross_attention.ca_model_all_stable_light import *
+from model.bcam_gate.bcam_model_light_t1 import *
 from utils.util import GradualWarmupScheduler, log, init_seed, worker_init_fn
 from torch import optim
 from feeder import dataset_p1 as dataset
@@ -32,6 +32,13 @@ class Processor:
         # 2. Save the current information of config file into a file
         # self.save_train_config_file()
 
+        # 3. Early stopping parameters (must be set before load_optimizer)
+        # Early stopping patience
+        self.patience = getattr(self.arg, 'patience', 300)
+        self.no_improve_epochs = 0
+        # Minimum learning rate
+        self.min_lr = getattr(self.arg, 'min_lr', 1e-7)
+
         # 4. Load the model
         self.load_model()
 
@@ -55,13 +62,6 @@ class Processor:
 
         # 9.1. Define the best epoch for test1
         self.best_epoch_test1 = -1
-
-        # 9.2. Early stopping parameters
-        # Early stopping patience
-        self.patience = getattr(self.arg, 'patience', 15)
-        self.no_improve_epochs = 0
-        # Minimum learning rate
-        self.min_lr = getattr(self.arg, 'min_lr', 1e-7)
 
         # 10. Define the class weight
         self.class_weight = 1.0
@@ -112,7 +112,7 @@ class Processor:
         )
 
         # Choose scheduler type from config
-        scheduler_type = getattr(self.arg, 'scheduler_type', 'cosine')
+        scheduler_type = getattr(self.arg, 'scheduler_type', 'multistep')
 
         if scheduler_type == 'cosine':
             # Cosine Annealing with restarts - more effective than MultiStepLR
