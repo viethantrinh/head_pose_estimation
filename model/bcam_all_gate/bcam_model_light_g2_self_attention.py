@@ -1,3 +1,4 @@
+
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -71,6 +72,94 @@ class CombinedAttention(nn.Module):
         x = self.channel(x)
         x, spatial_att = self.spatial(x)
         return x, spatial_att
+
+
+class ConvolutionalMultiheadAttention(nn.Module):
+    def __init__(self, in_channels, num_heads=8, kernel_size=3, padding=1):
+        super(ConvolutionalMultiheadAttention, self).__init__()
+        assert in_channels % num_heads == 0, "in_channels must be divisible by num_heads"
+
+        self.in_channels = in_channels
+        self.num_heads = num_heads
+        self.head_dim = in_channels // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        # Use smaller dimension for Q and K to reduce computation
+        self.qk_channels = max(in_channels // 8, num_heads)
+        self.qk_channels = (self.qk_channels // num_heads) * \
+            num_heads  # Ensure divisible by num_heads
+
+        self.query_conv = nn.Conv2d(
+            in_channels, self.qk_channels, kernel_size=kernel_size, padding=padding)
+        self.key_conv = nn.Conv2d(
+            in_channels, self.qk_channels, kernel_size=kernel_size, padding=padding)
+        self.value_conv = nn.Conv2d(
+            in_channels, in_channels, kernel_size=kernel_size, padding=padding)
+        self.out_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+
+        self.gamma = nn.Parameter(torch.zeros(1))
+        self.dropout = nn.Dropout(0.1)
+
+        # Initialize weights
+        nn.init.kaiming_normal_(self.query_conv.weight,
+                                mode='fan_out', nonlinearity='relu')
+        nn.init.kaiming_normal_(self.key_conv.weight,
+                                mode='fan_out', nonlinearity='relu')
+        nn.init.kaiming_normal_(self.value_conv.weight,
+                                mode='fan_out', nonlinearity='relu')
+        nn.init.kaiming_normal_(self.out_conv.weight,
+                                mode='fan_out', nonlinearity='relu')
+
+        if self.query_conv.bias is not None:
+            nn.init.zeros_(self.query_conv.bias)
+            nn.init.zeros_(self.key_conv.bias)
+            nn.init.zeros_(self.value_conv.bias)
+            nn.init.zeros_(self.out_conv.bias)
+
+    def forward(self, x):
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            raise ValueError(
+                "ConvolutionalMultiheadAttention input contains NaN or Inf values.")
+
+        batch_size, C, H, W = x.size()
+
+        # Generate Q, K, V
+        q = self.query_conv(x)  # [B, qk_channels, H, W]
+        k = self.key_conv(x)    # [B, qk_channels, H, W]
+        v = self.value_conv(x)  # [B, C, H, W]
+
+        # Reshape for multi-head attention
+        q = q.view(batch_size, self.num_heads, self.qk_channels //
+                   self.num_heads, H * W)  # [B, num_heads, head_dim_qk, H*W]
+        k = k.view(batch_size, self.num_heads, self.qk_channels //
+                   self.num_heads, H * W)  # [B, num_heads, head_dim_qk, H*W]
+        v = v.view(batch_size, self.num_heads, self.head_dim,
+                   H * W)  # [B, num_heads, head_dim, H*W]
+
+        # Compute attention scores
+        # [B, num_heads, H*W, H*W]
+        attn_scores = torch.matmul(q.transpose(-2, -1), k) * self.scale
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+
+        # Apply attention to values
+        out = torch.matmul(v, attn_weights.transpose(-2, -1)
+                           )  # [B, num_heads, head_dim, H*W]
+
+        # Reshape back to spatial dimensions
+        out = out.view(batch_size, C, H, W)
+
+        # Apply output projection
+        out = self.out_conv(out)
+
+        if torch.isnan(out).any() or torch.isinf(out).any():
+            raise ValueError(
+                "ConvolutionalMultiheadAttention output contains NaN or Inf values.")
+
+        # Residual connection with learnable scaling
+        out = x + torch.tanh(self.gamma) * out
+
+        return out
     
 class ConvolutionalSelfAttention(nn.Module):
     def __init__(self, in_channels, kernel_size=3, padding=1):
@@ -79,21 +168,15 @@ class ConvolutionalSelfAttention(nn.Module):
         self.query_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=kernel_size, padding=padding)
         self.key_conv = nn.Conv2d(in_channels, in_channels // 8, kernel_size=kernel_size, padding=padding)
         self.value_conv = nn.Conv2d(in_channels, in_channels, kernel_size=kernel_size, padding=padding)
-        
-        # Gate sau concat
-        self.gate_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
-        
         self.gamma = nn.Parameter(torch.zeros(1))
         self.softmax = nn.Softmax(dim=-1)
         nn.init.kaiming_normal_(self.query_conv.weight, mode='fan_out', nonlinearity='relu')
         nn.init.kaiming_normal_(self.key_conv.weight, mode='fan_out', nonlinearity='relu')
         nn.init.kaiming_normal_(self.value_conv.weight, mode='fan_out', nonlinearity='relu')
-        nn.init.kaiming_normal_(self.gate_conv.weight, mode='fan_out', nonlinearity='relu')
         if self.query_conv.bias is not None:
             nn.init.zeros_(self.query_conv.bias)
             nn.init.zeros_(self.key_conv.bias)
             nn.init.zeros_(self.value_conv.bias)
-            nn.init.zeros_(self.gate_conv.bias)
 
     def forward(self, x):
         if torch.isnan(x).any() or torch.isinf(x).any():
@@ -106,15 +189,11 @@ class ConvolutionalSelfAttention(nn.Module):
         attention = self.softmax(energy)
         out = torch.bmm(v, attention.transpose(1, 2))
         out = out.view(batch_size, C, H, W)
-        
-        # Gate sau concat
-        gate_values = torch.sigmoid(self.gate_conv(out))
-        out = out * gate_values
-        
         if torch.isnan(out).any() or torch.isinf(out).any():
             raise ValueError("ConvolutionalSelfAttention output contains NaN or Inf values.")
         out = self.gamma * out + x
         return out
+
 
 class BaseModel(nn.Module):
     def __init__(self):
@@ -242,7 +321,7 @@ class BidirectionalCrossAttention(nn.Module):
     
 class CrossStreamFusion(nn.Module):
     """
-    G2: Fusion-level gate (gate after soft attention in fusion layer)
+    ENHANCEMENT T1: Added gate mechanism after soft attention in fusion layer
     """
     def __init__(self, dim, num_heads=8):
         super(CrossStreamFusion, self).__init__()
@@ -251,12 +330,12 @@ class CrossStreamFusion(nn.Module):
         # Shared bidirectional cross-attention for all stream pairs
         self.shared_cross_attention = BidirectionalCrossAttention(dim, num_heads)
 
-        # Final fusion layer with G2 GATING mechanism
+        # Final fusion layer with GATING mechanism (T1)
         self.fusion_conv = nn.Conv2d(dim*4, dim, kernel_size=1)
         self.fusion_bn = nn.BatchNorm2d(dim)
         self.fusion_act = nn.GELU()
         
-        # G2: Gate after soft attention in fusion layer
+        # T1: Add gate after soft attention
         self.gate = nn.Sequential(
             nn.Conv2d(dim, dim, kernel_size=1),
             nn.Sigmoid()  # Gate values between 0 and 1
@@ -303,7 +382,7 @@ class CrossStreamFusion(nn.Module):
         fused = self.fusion_bn(fused)
         fused = self.fusion_act(fused)
         
-        # G2: Apply gate mechanism after soft attention
+        # T1: Apply gate mechanism after soft attention
         gate_values = self.gate(fused)
         fused = fused * gate_values
 
@@ -317,7 +396,8 @@ class CrossStreamFusion(nn.Module):
 
 class Model(nn.Module):
     """
-    VERSION G2 + G3: Combines Fusion-level gate and MHA gate
+    VERSION T1: Enhanced with Gate mechanism after soft attention in fusion layer
+    Use this model to test T1 enhancement only
     """
     def __init__(self):
         super(Model, self).__init__()
@@ -325,10 +405,13 @@ class Model(nn.Module):
         # Define the backbone
         self.base_model = BaseModel()
 
-        # G2: Enhanced cross-stream fusion with gating
+        # T1: Enhanced cross-stream fusion with gating
         self.cross_stream_fusion = CrossStreamFusion(dim=144, num_heads=8)
 
-        # G3: Self attention with gate sau concat
+        # Define the self attention part
+        self.convolutional_multihead_attention = ConvolutionalMultiheadAttention(
+            in_channels=144)
+        
         self.convolutional_self_attention = ConvolutionalSelfAttention(in_channels=144)
 
         # Define the adaptive pooling for desired output size
@@ -371,10 +454,10 @@ class Model(nn.Module):
 
             x_features.append(x3)
 
-        # 2. Apply G2: Enhanced cross-stream fusion with gating
+        # 2. Apply T1: Enhanced cross-stream fusion with gating
         x4 = self.cross_stream_fusion(x_features)
 
-        # 3. Apply G3: Self-attention with gate sau concat
+        # 3. Apply self-attention for further refinement
         x4 = self.convolutional_self_attention(x4)
 
         # 4. Pool down to (B, 144, 1, 1) and flatten to (B, 144)
@@ -386,3 +469,7 @@ class Model(nn.Module):
         roll_class = self.roll_class(x5)
 
         return yaw_class, pitch_class, roll_class
+
+
+
+    
