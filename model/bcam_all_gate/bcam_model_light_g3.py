@@ -281,7 +281,8 @@ class BidirectionalCrossAttention(nn.Module):
         x_fused = self.proj(x_cat)
 
         # Apply scaling and residual connection to x1
-        x1_out = x1 + torch.tanh(self.gamma) * x_fused
+        # x1_out = x1 + torch.tanh(self.gamma) * x_fused
+        x1_out = x1 + self.gamma * x_fused
 
         return x1_out
 
@@ -346,7 +347,8 @@ class CrossStreamFusion(nn.Module):
         fused = self.fusion_layer(fused)
 
         # Apply feed-forward network with scaling
-        fused = fused + torch.tanh(self.gamma_ffn) * self.ffn(fused)
+        # fused = fused + torch.tanh(self.gamma_ffn) * self.ffn(fused)
+        fused = fused + self.gamma_ffn * self.ffn(fused)
 
         return fused
 

@@ -1,3 +1,4 @@
+
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -97,7 +98,7 @@ class ConvolutionalMultiheadAttention(nn.Module):
         self.out_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
 
         self.gamma = nn.Parameter(torch.zeros(1))
-        self.dropout = nn.Dropout(0.1)
+        # self.dropout = nn.Dropout(0.1)
 
         # Initialize weights
         nn.init.kaiming_normal_(self.query_conv.weight,
@@ -139,7 +140,7 @@ class ConvolutionalMultiheadAttention(nn.Module):
         # [B, num_heads, H*W, H*W]
         attn_scores = torch.matmul(q.transpose(-2, -1), k) * self.scale
         attn_weights = F.softmax(attn_scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
+        # attn_weights = self.dropout(attn_weights)
 
         # Apply attention to values
         out = torch.matmul(v, attn_weights.transpose(-2, -1)
@@ -156,7 +157,8 @@ class ConvolutionalMultiheadAttention(nn.Module):
                 "ConvolutionalMultiheadAttention output contains NaN or Inf values.")
 
         # Residual connection with learnable scaling
-        out = x + torch.tanh(self.gamma) * out
+        # out = x + torch.tanh(self.gamma) * out
+        out = x + self.gamma * out
 
         return out
 
@@ -262,7 +264,7 @@ class BidirectionalCrossAttention(nn.Module):
         super(BidirectionalCrossAttention, self).__init__()
         self.cross_attn = CrossAttention(dim, num_heads)
         self.proj = nn.Conv2d(dim*2, dim, kernel_size=1)
-        # Learnable scaling parameter for internal fusion
+        # Learnable scaling parameter
         self.gamma = nn.Parameter(torch.zeros(1))
 
     def forward(self, x1, x2):
@@ -280,14 +282,15 @@ class BidirectionalCrossAttention(nn.Module):
         x_fused = self.proj(x_cat)
 
         # Apply scaling and residual connection to x1
-        x1_out = x1 + torch.tanh(self.gamma) * x_fused
+        # x1_out = x1 + torch.tanh(self.gamma) * x_fused
+        x1_out = x1 + self.gamma * x_fused
 
         return x1_out
-
-
+    
+    
 class CrossStreamFusion(nn.Module):
     """
-    G1 + G2: Stream-level gate + Fusion-level gate
+    ENHANCEMENT T1: Added gate mechanism after soft attention in fusion layer
     """
     def __init__(self, dim, num_heads=8):
         super(CrossStreamFusion, self).__init__()
@@ -296,12 +299,12 @@ class CrossStreamFusion(nn.Module):
         # Shared bidirectional cross-attention for all stream pairs
         self.shared_cross_attention = BidirectionalCrossAttention(dim, num_heads)
 
-        # Final fusion layer with G2 GATING mechanism
+        # Final fusion layer with GATING mechanism (T1)
         self.fusion_conv = nn.Conv2d(dim*4, dim, kernel_size=1)
         self.fusion_bn = nn.BatchNorm2d(dim)
         self.fusion_act = nn.GELU()
         
-        # G2: Gate after soft attention in fusion layer
+        # T1: Add gate after soft attention
         self.gate = nn.Sequential(
             nn.Conv2d(dim, dim, kernel_size=1),
             nn.Sigmoid()  # Gate values between 0 and 1
@@ -348,7 +351,7 @@ class CrossStreamFusion(nn.Module):
         fused = self.fusion_bn(fused)
         fused = self.fusion_act(fused)
         
-        # G2: Apply gate mechanism after soft attention
+        # T1: Apply gate mechanism after soft attention
         gate_values = self.gate(fused)
         fused = fused * gate_values
 
@@ -356,14 +359,16 @@ class CrossStreamFusion(nn.Module):
         ffn_out = self.ffn_expand(fused)
         ffn_out = self.ffn_act(ffn_out)
         ffn_out = self.ffn_project(ffn_out)
-        fused = fused + torch.tanh(self.gamma_ffn) * ffn_out
+        
+        # fused = fused + torch.tanh(self.gamma_ffn) * ffn_out
+        fused = fused + self.gamma_ffn * ffn_out
 
         return fused
 
-
 class Model(nn.Module):
     """
-    VERSION G1 + G2: Combines Stream-level gate and Fusion-level gate
+    VERSION T1: Enhanced with Gate mechanism after soft attention in fusion layer
+    Use this model to test T1 enhancement only
     """
     def __init__(self):
         super(Model, self).__init__()
@@ -371,18 +376,12 @@ class Model(nn.Module):
         # Define the backbone
         self.base_model = BaseModel()
 
-        # G2: Enhanced cross-stream fusion with gating
+        # T1: Enhanced cross-stream fusion with gating
         self.cross_stream_fusion = CrossStreamFusion(dim=144, num_heads=8)
 
         # Define the self attention part
         self.convolutional_multihead_attention = ConvolutionalMultiheadAttention(
             in_channels=144)
-
-        # G1: Stream-level gate (applied AFTER PE, BEFORE fusion)
-        self.g1_stream_gate = nn.Sequential(
-            nn.Conv2d(144, 144, kernel_size=1),
-            nn.Sigmoid()  # Gate values between 0 and 1, shape [B, 144, H, W]
-        )
 
         # Define the adaptive pooling for desired output size
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
@@ -398,7 +397,7 @@ class Model(nn.Module):
                     pos[0, d] = np.cos(i / (10000 ** (2 * (d // 2) / 144)))
             self.patch_pos_embed.append(nn.Parameter(pos, requires_grad=True))
 
-        # Define the fully connected layers for angles
+        # Original Linear prediction heads
         self.yaw_class = nn.Linear(144, 66)
         self.pitch_class = nn.Linear(144, 66)
         self.roll_class = nn.Linear(144, 66)
@@ -422,13 +421,9 @@ class Model(nn.Module):
             # Add position embedding to this stream
             x3 = x3 + pos_embed
 
-            # Apply G1: Stream-level gate (channel-wise filtering)
-            g1_gate = self.g1_stream_gate(x3)  # [B, 144, H, W]
-            x3 = x3 * g1_gate  # Element-wise multiplication
-
             x_features.append(x3)
 
-        # 2. Apply G2: Enhanced cross-stream fusion with gating
+        # 2. Apply T1: Enhanced cross-stream fusion with gating
         x4 = self.cross_stream_fusion(x_features)
 
         # 3. Apply self-attention for further refinement
@@ -437,9 +432,13 @@ class Model(nn.Module):
         # 4. Pool down to (B, 144, 1, 1) and flatten to (B, 144)
         x5 = self.pool(x4).flatten(1)
 
-        # 5. Predict angle bins
+        # 5. Predict angle bins using original Linear layers
         yaw_class = self.yaw_class(x5)
         pitch_class = self.pitch_class(x5)
         roll_class = self.roll_class(x5)
 
         return yaw_class, pitch_class, roll_class
+
+
+
+    

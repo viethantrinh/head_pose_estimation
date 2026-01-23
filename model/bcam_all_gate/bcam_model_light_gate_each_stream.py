@@ -97,7 +97,7 @@ class ConvolutionalMultiheadAttention(nn.Module):
         self.out_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
 
         self.gamma = nn.Parameter(torch.zeros(1))
-        self.dropout = nn.Dropout(0.1)
+        # self.dropout = nn.Dropout(0.1)
 
         # Initialize weights
         nn.init.kaiming_normal_(self.query_conv.weight,
@@ -139,7 +139,7 @@ class ConvolutionalMultiheadAttention(nn.Module):
         # [B, num_heads, H*W, H*W]
         attn_scores = torch.matmul(q.transpose(-2, -1), k) * self.scale
         attn_weights = F.softmax(attn_scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
+        # attn_weights = self.dropout(attn_weights)
 
         # Apply attention to values
         out = torch.matmul(v, attn_weights.transpose(-2, -1)
@@ -156,7 +156,8 @@ class ConvolutionalMultiheadAttention(nn.Module):
                 "ConvolutionalMultiheadAttention output contains NaN or Inf values.")
 
         # Residual connection with learnable scaling
-        out = x + torch.tanh(self.gamma) * out
+        # out = x + torch.tanh(self.gamma) * out
+        out = x + self.gamma * out
 
         return out
 
@@ -212,18 +213,19 @@ class BaseModel(nn.Module):
         x3, spatial_att = self.attention(x3)
         return x1, x2, x3
 
+
 class CrossAttention(nn.Module):
     def __init__(self, dim, num_heads=8):
         super(CrossAttention, self).__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
         self.scale = head_dim ** -0.5
-        
+
         self.q_proj = nn.Linear(dim, dim)
         self.k_proj = nn.Linear(dim, dim)
         self.v_proj = nn.Linear(dim, dim)
         self.out_proj = nn.Linear(dim, dim)
-        
+
     def forward(self, query, key_value):
         """
         Args:
@@ -233,29 +235,36 @@ class CrossAttention(nn.Module):
             attended_features: tensor with shape [B, C, H, W]
         """
         batch_size, C, H, W = query.shape
-        
+
         # Reshape for attention computation
         q = self.q_proj(query.flatten(2).transpose(1, 2))  # [B, H*W, C]
         k = self.k_proj(key_value.flatten(2).transpose(1, 2))  # [B, H*W, C]
         v = self.v_proj(key_value.flatten(2).transpose(1, 2))  # [B, H*W, C]
-        
+
         # Reshape for multi-head attention
-        q = q.reshape(batch_size, H*W, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)  # [B, num_heads, H*W, C/num_heads]
-        k = k.reshape(batch_size, H*W, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
-        v = v.reshape(batch_size, H*W, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
-        
+        # [B, num_heads, H*W, C/num_heads]
+        q = q.reshape(batch_size, H*W, self.num_heads, C //
+                      self.num_heads).permute(0, 2, 1, 3)
+        k = k.reshape(batch_size, H*W, self.num_heads, C //
+                      self.num_heads).permute(0, 2, 1, 3)
+        v = v.reshape(batch_size, H*W, self.num_heads, C //
+                      self.num_heads).permute(0, 2, 1, 3)
+
         # Compute attention
-        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B, num_heads, H*W, H*W]
+        attn = torch.matmul(q, k.transpose(-2, -1)) * \
+            self.scale  # [B, num_heads, H*W, H*W]
         attn = F.softmax(attn, dim=-1)
-        
+
         # Apply attention weights
-        x = torch.matmul(attn, v).transpose(1, 2).reshape(batch_size, H*W, C)  # [B, H*W, C]
+        x = torch.matmul(attn, v).transpose(1, 2).reshape(
+            batch_size, H*W, C)  # [B, H*W, C]
         x = self.out_proj(x)
-        
+
         # Reshape back to spatial dimensions
         x = x.transpose(1, 2).reshape(batch_size, C, H, W)
-        
+
         return x
+
 
 class BidirectionalCrossAttention(nn.Module):
     def __init__(self, dim, num_heads=8):
@@ -280,8 +289,9 @@ class BidirectionalCrossAttention(nn.Module):
         x_fused = self.proj(x_cat)
 
         # Apply scaling and residual connection to x1
-        x1_out = x1 + torch.tanh(self.gamma) * x_fused
-
+        # x1_out = x1 + torch.tanh(self.gamma) * x_fused
+        x1_out = x1 + self.gamma * x_fused
+        
         return x1_out
 
 
@@ -309,7 +319,13 @@ class CrossStreamFusion(nn.Module):
             nn.Conv2d(dim*4, dim, kernel_size=1)
         )
         self.gamma_ffn = nn.Parameter(torch.zeros(1))
-        
+
+        self.stream_gates = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(dim, dim, kernel_size=1),
+                nn.Sigmoid()
+            ) for _ in range(4)
+        ])
 
     def forward(self, features):
         """
@@ -338,6 +354,10 @@ class CrossStreamFusion(nn.Module):
                 master_enhanced = torch.stack(cross_attended).mean(dim=0)
             else:
                 master_enhanced = master
+
+            gate = self.stream_gates[i](master_enhanced)
+            master_enhanced = master_enhanced * gate
+
             enhanced_features.append(master_enhanced)
 
         # Concatenate all enhanced features
@@ -345,56 +365,20 @@ class CrossStreamFusion(nn.Module):
         fused = self.fusion_layer(fused)
 
         # Apply feed-forward network with scaling
-        fused = fused + torch.tanh(self.gamma_ffn) * self.ffn(fused)
-
+        # fused = fused + torch.tanh(self.gamma_ffn) * self.ffn(fused)
+        fused = fused + self.gamma_ffn * self.ffn(fused)
+        
         return fused
-    
-class GLUPredictionHead(nn.Module):
-    """
-    ENHANCEMENT T2: Gated Linear Unit for prediction heads
-    Replaces standard FC layers with GLU for better feature selection
-    """
-    def __init__(self, input_dim=144, hidden_dim=256, num_bins=66):
-        super(GLUPredictionHead, self).__init__()
-        
-        # GLU-based layers - each outputs 2x for gating
-        self.fc1 = nn.Linear(input_dim, hidden_dim * 2)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim * 2)
-        self.fc3 = nn.Linear(hidden_dim, num_bins)
-        
-        # Dropout for regularization
-        self.dropout = nn.Dropout(0.3)
-        
-    def forward(self, x):
-        # First GLU layer
-        x = self.fc1(x)
-        x, gate = x.chunk(2, dim=-1)  # Split into two halves
-        x = x * torch.sigmoid(gate)   # Apply gating
-        x = self.dropout(x)
-        
-        # Second GLU layer
-        x = self.fc2(x)
-        x, gate = x.chunk(2, dim=-1)
-        x = x * torch.sigmoid(gate)
-        x = self.dropout(x)
-        
-        # Final classification layer
-        x = self.fc3(x)
-        return x
 
 
 class Model(nn.Module):
-    """
-    VERSION T2: Enhanced with GLU-based prediction heads
-    Use this model to test T2 enhancement only
-    """
     def __init__(self):
         super(Model, self).__init__()
 
         # Define the backbone
         self.base_model = BaseModel()
 
-        # Original cross-stream fusion (without gating)
+        # Define the cross-stream fusion module with parameter optimization (shared cross-attention)
         self.cross_stream_fusion = CrossStreamFusion(dim=144, num_heads=8)
 
         # Define the self attention part
@@ -415,10 +399,10 @@ class Model(nn.Module):
                     pos[0, d] = np.cos(i / (10000 ** (2 * (d // 2) / 144)))
             self.patch_pos_embed.append(nn.Parameter(pos, requires_grad=True))
 
-        # T2: GLU-based prediction heads
-        self.yaw_head = GLUPredictionHead(input_dim=144, hidden_dim=256, num_bins=66)
-        self.pitch_head = GLUPredictionHead(input_dim=144, hidden_dim=256, num_bins=66)
-        self.roll_head = GLUPredictionHead(input_dim=144, hidden_dim=256, num_bins=66)
+        # Define the fully connected layers for angles
+        self.yaw_class = nn.Linear(144, 66)
+        self.pitch_class = nn.Linear(144, 66)
+        self.roll_class = nn.Linear(144, 66)
 
     def forward(self, x_parts):
         x_features = []
@@ -441,18 +425,19 @@ class Model(nn.Module):
 
             x_features.append(x3)
 
-        # 2. Apply original cross-stream fusion (no gating)
+        # 2. Apply cross-stream fusion with parameter-optimized bidirectional cross-attention
         x4 = self.cross_stream_fusion(x_features)
 
         # 3. Apply self-attention for further refinement
         x4 = self.convolutional_multihead_attention(x4)
 
-        # 4. Pool down to (B, 144, 1, 1) and flatten to (B, 144)
+        # 4. Multibin classification and regression
+        # Pool down to (B, 144, 1, 1) and flatten to (B, 144)
         x5 = self.pool(x4).flatten(1)
 
-        # 5. T2: Predict angle bins using GLU-based heads
-        yaw_class = self.yaw_head(x5)
-        pitch_class = self.pitch_head(x5)
-        roll_class = self.roll_head(x5)
+        # 5. Predict angle bins
+        yaw_class = self.yaw_class(x5)
+        pitch_class = self.pitch_class(x5)
+        roll_class = self.roll_class(x5)
 
         return yaw_class, pitch_class, roll_class
