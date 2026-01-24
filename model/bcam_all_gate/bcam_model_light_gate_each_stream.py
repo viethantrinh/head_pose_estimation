@@ -365,8 +365,8 @@ class CrossStreamFusion(nn.Module):
         fused = self.fusion_layer(fused)
 
         # Apply feed-forward network with scaling
-        # fused = fused + torch.tanh(self.gamma_ffn) * self.ffn(fused)
-        fused = fused + self.gamma_ffn * self.ffn(fused)
+        fused = fused + torch.tanh(self.gamma_ffn) * self.ffn(fused)
+        # fused = fused + self.gamma_ffn * self.ffn(fused)
         
         return fused
 
