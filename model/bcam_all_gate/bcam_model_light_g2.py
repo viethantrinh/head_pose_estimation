@@ -304,11 +304,9 @@ class CrossStreamFusion(nn.Module):
         self.fusion_bn = nn.BatchNorm2d(dim)
         self.fusion_act = nn.GELU()
         
-        # T1: Add gate after soft attention
-        self.gate = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=1),
-            nn.Sigmoid()  # Gate values between 0 and 1
-        )
+        # T1: Standard BCAM-style gate - spatial attention
+        self.gate_conv = nn.Conv2d(dim, 1, kernel_size=7, padding=3)
+        self.gate_sigmoid = nn.Sigmoid()
 
         # Feed-forward network with scaling factor
         self.ffn_expand = nn.Conv2d(dim, dim*4, kernel_size=1)
@@ -350,10 +348,10 @@ class CrossStreamFusion(nn.Module):
         fused = self.fusion_conv(fused)
         fused = self.fusion_bn(fused)
         fused = self.fusion_act(fused)
-        
-        # T1: Apply gate mechanism after soft attention
-        gate_values = self.gate(fused)
-        fused = fused * gate_values
+        # standard BCAM spatial attention gate
+        gate = self.gate_sigmoid(self.gate_conv(fused))
+        fused = fused * gate
+        fused, _ = self.gate(fused)
 
         # Apply feed-forward network with scaling
         ffn_out = self.ffn_expand(fused)
