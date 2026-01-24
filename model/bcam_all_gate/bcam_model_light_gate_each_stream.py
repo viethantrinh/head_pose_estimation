@@ -156,8 +156,8 @@ class ConvolutionalMultiheadAttention(nn.Module):
                 "ConvolutionalMultiheadAttention output contains NaN or Inf values.")
 
         # Residual connection with learnable scaling
-        # out = x + torch.tanh(self.gamma) * out
-        out = x + self.gamma * out
+        out = x + torch.tanh(self.gamma) * out
+        # out = x + self.gamma * out
 
         return out
 
@@ -289,8 +289,8 @@ class BidirectionalCrossAttention(nn.Module):
         x_fused = self.proj(x_cat)
 
         # Apply scaling and residual connection to x1
-        # x1_out = x1 + torch.tanh(self.gamma) * x_fused
-        x1_out = x1 + self.gamma * x_fused
+        x1_out = x1 + torch.tanh(self.gamma) * x_fused
+        # x1_out = x1 + self.gamma * x_fused
         
         return x1_out
 
