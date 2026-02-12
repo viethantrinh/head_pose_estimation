@@ -30,10 +30,8 @@ class ConvBlock2d(nn.Module):
 class SpatialAttention(nn.Module):
     def __init__(self, in_channels):
         super(SpatialAttention, self).__init__()
-        self.conv1 = ConvBlock2d(
-            in_channels=in_channels, out_channels=16, kernel_size=3, padding=1)
-        self.conv2 = ConvBlock2d(
-            in_channels=16, out_channels=1, kernel_size=3, padding=1, activation='no')
+        self.conv1 = ConvBlock2d(in_channels=in_channels, out_channels=16, kernel_size=3, padding=1)
+        self.conv2 = ConvBlock2d(in_channels=16, out_channels=1, kernel_size=3, padding=1, activation='no')
         self.sigmoid = nn.Sigmoid()
         self.bn = nn.BatchNorm2d(1)
 
@@ -43,7 +41,6 @@ class SpatialAttention(nn.Module):
         att = self.bn(att)
         att = self.sigmoid(att)
         return x * att, att
-
 
 class ChannelAttention(nn.Module):
     def __init__(self, in_channels, reduction=16):
@@ -60,7 +57,6 @@ class ChannelAttention(nn.Module):
         x_att = self.sigmoid(self.fc2(x_fc)).view(batch_size, channels, 1, 1)
         return x * x_att
 
-
 class CombinedAttention(nn.Module):
     def __init__(self, in_channels):
         super(CombinedAttention, self).__init__()
@@ -71,95 +67,6 @@ class CombinedAttention(nn.Module):
         x = self.channel(x)
         x, spatial_att = self.spatial(x)
         return x, spatial_att
-
-
-class ConvolutionalMultiheadAttention(nn.Module):
-    def __init__(self, in_channels, num_heads=8, kernel_size=3, padding=1):
-        super(ConvolutionalMultiheadAttention, self).__init__()
-        assert in_channels % num_heads == 0, "in_channels must be divisible by num_heads"
-
-        self.in_channels = in_channels
-        self.num_heads = num_heads
-        self.head_dim = in_channels // num_heads
-        self.scale = self.head_dim ** -0.5
-
-        # Use smaller dimension for Q and K to reduce computation
-        self.qk_channels = max(in_channels // 8, num_heads)
-        self.qk_channels = (self.qk_channels // num_heads) * \
-            num_heads  # Ensure divisible by num_heads
-
-        self.query_conv = nn.Conv2d(
-            in_channels, self.qk_channels, kernel_size=kernel_size, padding=padding)
-        self.key_conv = nn.Conv2d(
-            in_channels, self.qk_channels, kernel_size=kernel_size, padding=padding)
-        self.value_conv = nn.Conv2d(
-            in_channels, in_channels, kernel_size=kernel_size, padding=padding)
-        self.out_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
-
-        self.gamma = nn.Parameter(torch.zeros(1))
-        # self.dropout = nn.Dropout(0.1)
-
-        # Initialize weights
-        nn.init.kaiming_normal_(self.query_conv.weight,
-                                mode='fan_out', nonlinearity='relu')
-        nn.init.kaiming_normal_(self.key_conv.weight,
-                                mode='fan_out', nonlinearity='relu')
-        nn.init.kaiming_normal_(self.value_conv.weight,
-                                mode='fan_out', nonlinearity='relu')
-        nn.init.kaiming_normal_(self.out_conv.weight,
-                                mode='fan_out', nonlinearity='relu')
-
-        if self.query_conv.bias is not None:
-            nn.init.zeros_(self.query_conv.bias)
-            nn.init.zeros_(self.key_conv.bias)
-            nn.init.zeros_(self.value_conv.bias)
-            nn.init.zeros_(self.out_conv.bias)
-
-    def forward(self, x):
-        if torch.isnan(x).any() or torch.isinf(x).any():
-            raise ValueError(
-                "ConvolutionalMultiheadAttention input contains NaN or Inf values.")
-
-        batch_size, C, H, W = x.size()
-
-        # Generate Q, K, V
-        q = self.query_conv(x)  # [B, qk_channels, H, W]
-        k = self.key_conv(x)    # [B, qk_channels, H, W]
-        v = self.value_conv(x)  # [B, C, H, W]
-
-        # Reshape for multi-head attention
-        q = q.view(batch_size, self.num_heads, self.qk_channels //
-                   self.num_heads, H * W)  # [B, num_heads, head_dim_qk, H*W]
-        k = k.view(batch_size, self.num_heads, self.qk_channels //
-                   self.num_heads, H * W)  # [B, num_heads, head_dim_qk, H*W]
-        v = v.view(batch_size, self.num_heads, self.head_dim,
-                   H * W)  # [B, num_heads, head_dim, H*W]
-
-        # Compute attention scores
-        # [B, num_heads, H*W, H*W]
-        attn_scores = torch.matmul(q.transpose(-2, -1), k) * self.scale
-        attn_weights = F.softmax(attn_scores, dim=-1)
-        # attn_weights = self.dropout(attn_weights)
-
-        # Apply attention to values
-        out = torch.matmul(v, attn_weights.transpose(-2, -1)
-                           )  # [B, num_heads, head_dim, H*W]
-
-        # Reshape back to spatial dimensions
-        out = out.view(batch_size, C, H, W)
-
-        # Apply output projection
-        out = self.out_conv(out)
-
-        if torch.isnan(out).any() or torch.isinf(out).any():
-            raise ValueError(
-                "ConvolutionalMultiheadAttention output contains NaN or Inf values.")
-
-        # Residual connection with learnable scaling
-        # out = x + torch.tanh(self.gamma) * out
-        out = x + self.gamma * out
-
-        return out
 
 
 class BaseModel(nn.Module):
@@ -212,119 +119,243 @@ class BaseModel(nn.Module):
 
         x3, spatial_att = self.attention(x3)
         return x1, x2, x3
+    
+class ConvolutionalMultiheadAttention(nn.Module):
+    def __init__(self, in_channels, num_heads=8, kernel_size=3, padding=1):
+        super(ConvolutionalMultiheadAttention, self).__init__()
+        assert in_channels % num_heads == 0, "in_channels must be divisible by num_heads"
 
+        self.in_channels = in_channels
+        self.num_heads = num_heads
+        self.head_dim = in_channels // num_heads
+        
+        # Use smaller dimension for Q and K to reduce computation
+        self.qk_channels = max(in_channels // 8, num_heads)
+        self.qk_channels = (self.qk_channels // num_heads) * \
+            num_heads  # Ensure divisible by num_heads
+        
+        # Scale should match Q and K dimension, not Value dimension
+        self.qk_head_dim = self.qk_channels // num_heads
+        self.scale = self.qk_head_dim ** -0.5
+
+        self.query_conv = nn.Conv2d(
+            in_channels, self.qk_channels, kernel_size=kernel_size, padding=padding)
+        self.key_conv = nn.Conv2d(
+            in_channels, self.qk_channels, kernel_size=kernel_size, padding=padding)
+        self.value_conv = nn.Conv2d(
+            in_channels, in_channels, kernel_size=kernel_size, padding=padding)
+        self.out_conv = nn.Conv2d(in_channels, in_channels, kernel_size=1)
+
+        self.gamma = nn.Parameter(torch.zeros(1))
+        self.dropout = nn.Dropout(0.1)
+
+        # Initialize weights
+        nn.init.kaiming_normal_(self.query_conv.weight,
+                                mode='fan_out', nonlinearity='relu')
+        nn.init.kaiming_normal_(self.key_conv.weight,
+                                mode='fan_out', nonlinearity='relu')
+        nn.init.kaiming_normal_(self.value_conv.weight,
+                                mode='fan_out', nonlinearity='relu')
+        nn.init.kaiming_normal_(self.out_conv.weight,
+                                mode='fan_out', nonlinearity='relu')
+
+        if self.query_conv.bias is not None:
+            nn.init.zeros_(self.query_conv.bias)
+            nn.init.zeros_(self.key_conv.bias)
+            nn.init.zeros_(self.value_conv.bias)
+            nn.init.zeros_(self.out_conv.bias)
+
+    def forward(self, x):
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            raise ValueError(
+                "ConvolutionalMultiheadAttention input contains NaN or Inf values.")
+
+        batch_size, C, H, W = x.size()
+
+        # Generate Q, K, V
+        q = self.query_conv(x)  # [B, qk_channels, H, W]
+        k = self.key_conv(x)    # [B, qk_channels, H, W]
+        v = self.value_conv(x)  # [B, C, H, W]
+
+        # Reshape for multi-head attention
+        q = q.view(batch_size, self.num_heads, self.qk_channels //
+                   self.num_heads, H * W)  # [B, num_heads, head_dim_qk, H*W]
+        k = k.view(batch_size, self.num_heads, self.qk_channels //
+                   self.num_heads, H * W)  # [B, num_heads, head_dim_qk, H*W]
+        v = v.view(batch_size, self.num_heads, self.head_dim,
+                   H * W)  # [B, num_heads, head_dim, H*W]
+
+        # Compute attention scores
+        # [B, num_heads, H*W, H*W]
+        attn_scores = torch.matmul(q.transpose(-2, -1), k) * self.scale
+        attn_weights = F.softmax(attn_scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+
+        # Apply attention to values
+        out = torch.matmul(v, attn_weights.transpose(-2, -1)
+                           )  # [B, num_heads, head_dim, H*W]
+
+        # Reshape back to spatial dimensions
+        out = out.view(batch_size, C, H, W)
+
+        # Apply output projection
+        out = self.out_conv(out)
+
+        if torch.isnan(out).any() or torch.isinf(out).any():
+            raise ValueError(
+                "ConvolutionalMultiheadAttention output contains NaN or Inf values.")
+
+        # Residual connection with learnable scaling
+        out = x + torch.tanh(self.gamma) * out
+
+        return out
 
 class CrossAttention(nn.Module):
-    def __init__(self, dim, num_heads=8):
+    def __init__(self, dim, num_heads=8, attn_drop=0.1, proj_drop=0.1):
         super(CrossAttention, self).__init__()
+        assert dim % num_heads == 0, "dim must be divisible by num_heads"
+        
         self.num_heads = num_heads
-        head_dim = dim // num_heads
-        self.scale = head_dim ** -0.5
-
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim ** -0.5
+        
+        # # Pre-Norm for training stability
+        self.norm_q = nn.LayerNorm(dim)
+        self.norm_kv = nn.LayerNorm(dim)
+        
         self.q_proj = nn.Linear(dim, dim)
         self.k_proj = nn.Linear(dim, dim)
         self.v_proj = nn.Linear(dim, dim)
         self.out_proj = nn.Linear(dim, dim)
-
+        
+        # # Regularization
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj_drop = nn.Dropout(proj_drop)
+        
     def forward(self, query, key_value):
         """
         Args:
-            query: tensor with shape [B, C, H, W]
-            key_value: tensor with shape [B, C, H, W]
+            query: [B, N_q, C] - query tokens
+            key_value: [B, N_kv, C] - key/value tokens
         Returns:
-            attended_features: tensor with shape [B, C, H, W]
+            out: [B, N_q, C]
         """
-        batch_size, C, H, W = query.shape
-
-        # Reshape for attention computation
-        q = self.q_proj(query.flatten(2).transpose(1, 2))  # [B, H*W, C]
-        k = self.k_proj(key_value.flatten(2).transpose(1, 2))  # [B, H*W, C]
-        v = self.v_proj(key_value.flatten(2).transpose(1, 2))  # [B, H*W, C]
-
-        # Reshape for multi-head attention
-        # [B, num_heads, H*W, C/num_heads]
-        q = q.reshape(batch_size, H*W, self.num_heads, C //
-                      self.num_heads).permute(0, 2, 1, 3)
-        k = k.reshape(batch_size, H*W, self.num_heads, C //
-                      self.num_heads).permute(0, 2, 1, 3)
-        v = v.reshape(batch_size, H*W, self.num_heads, C //
-                      self.num_heads).permute(0, 2, 1, 3)
-
-        # Compute attention
-        attn = torch.matmul(q, k.transpose(-2, -1)) * \
-            self.scale  # [B, num_heads, H*W, H*W]
+        batch_size, N_q, C = query.shape
+        N_kv = key_value.shape[1]
+        
+        # Pre-Norm for training stability
+        q = self.norm_q(query)
+        kv = self.norm_kv(key_value)
+        
+        # Linear projections
+        q = self.q_proj(q)    # [B, N_q, C]
+        k = self.k_proj(kv)   # [B, N_kv, C]
+        v = self.v_proj(kv)   # [B, N_kv, C]
+        
+        # Reshape for multi-head: [B, num_heads, N, head_dim]
+        q = q.view(batch_size, N_q, self.num_heads, self.head_dim).transpose(1, 2)
+        k = k.view(batch_size, N_kv, self.num_heads, self.head_dim).transpose(1, 2)
+        v = v.view(batch_size, N_kv, self.num_heads, self.head_dim).transpose(1, 2)
+        
+        # Attention: [B, num_heads, N_q, N_kv]
+        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale
         attn = F.softmax(attn, dim=-1)
-
-        # Apply attention weights
-        x = torch.matmul(attn, v).transpose(1, 2).reshape(
-            batch_size, H*W, C)  # [B, H*W, C]
-        x = self.out_proj(x)
-
-        # Reshape back to spatial dimensions
-        x = x.transpose(1, 2).reshape(batch_size, C, H, W)
-
-        return x
+        attn = self.attn_drop(attn)
+        
+        # Weighted sum: [B, num_heads, N_q, head_dim]
+        out = torch.matmul(attn, v)
+        
+        # Merge heads: [B, N_q, C]
+        out = out.transpose(1, 2).reshape(batch_size, N_q, C)
+        out = self.out_proj(out)
+        out = self.proj_drop(out)
+        
+        return out
 
 
 class BidirectionalCrossAttention(nn.Module):
-    def __init__(self, dim, num_heads=8):
+    """
+    Efficient bidirectional cross-attention.
+    Each master stream attends to ALL tokens from ALL other streams simultaneously,
+    rather than pairwise attention + averaging.
+    """
+    def __init__(self, dim, num_heads=8, attn_drop=0.1, proj_drop=0.1):
         super(BidirectionalCrossAttention, self).__init__()
-        self.cross_attn = CrossAttention(dim, num_heads)
-        self.proj = nn.Conv2d(dim*2, dim, kernel_size=1)
-        # Learnable scaling parameter
+        
+        # Single cross-attention that handles variable-length KV
+        self.cross_attn = CrossAttention(dim, num_heads, attn_drop, proj_drop)
+        
+        # Learnable scaling for residual
         self.gamma = nn.Parameter(torch.zeros(1))
 
-    def forward(self, x1, x2):
+    def forward(self, master, other_streams):
         """
-        Bidirectional cross-attention between x1 and x2
+        Args:
+            master: [B, C, H, W] - the master stream
+            other_streams: list of [B, C, H, W] - all other streams
+        Returns:
+            enhanced_master: [B, C, H, W] - master with cross-stream info
         """
-        # x1 as query, x2 as key/value
-        x1_to_x2 = self.cross_attn(x1, x2)
-
-        # x2 as query, x1 as key/value
-        x2_to_x1 = self.cross_attn(x2, x1)
-
-        # Concatenate and project
-        x_cat = torch.cat([x1_to_x2, x2_to_x1], dim=1)
-        x_fused = self.proj(x_cat)
-
-        # Apply scaling and residual connection to x1
-        # x1_out = x1 + torch.tanh(self.gamma) * x_fused
-        x1_out = x1 + self.gamma * x_fused
-
-        return x1_out
-
-
+        B, C, H, W = master.shape
+        
+        # Flatten master: [B, N, C]
+        q = master.flatten(2).transpose(1, 2)
+        
+        # Concatenate ALL other streams into one KV sequence: [B, K*N, C]
+        # This lets the master attend to all tokens from all other streams simultaneously
+        kv_list = [s.flatten(2).transpose(1, 2) for s in other_streams]
+        kv = torch.cat(kv_list, dim=1)  # [B, K*N, C]
+        
+        # Cross-attention: master queries, all others as KV
+        attn_out = self.cross_attn(q, kv)  # [B, N, C]
+        
+        # Reshape back to spatial: [B, C, H, W]
+        attn_out = attn_out.transpose(1, 2).view(B, C, H, W)
+        
+        # Residual connection with learnable scaling
+        out = master + torch.tanh(self.gamma) * attn_out
+        
+        return out
+    
+    
 class CrossStreamFusion(nn.Module):
-    def __init__(self, dim, num_heads=8):
+    """
+    Improved cross-stream fusion with:
+    1. Pre-Norm (LayerNorm before attention) for training stability
+    2. Dropout for regularization  
+    3. Efficient multi-stream attention (attend to all streams at once)
+    4. Gate mechanism after fusion
+    5. FFN with pre-norm
+    """
+    def __init__(self, dim, num_heads=8, attn_drop=0.1, proj_drop=0.1):
         super(CrossStreamFusion, self).__init__()
         self.dim = dim
 
-        # Create bidirectional cross-attention modules for each master-slave pair
+        # Separate cross-attention module for each stream
         self.cross_attentions = nn.ModuleList([
-            nn.ModuleList([BidirectionalCrossAttention(dim, num_heads)
-                          for j in range(4) if j != i])
-            for i in range(4)
+            BidirectionalCrossAttention(dim, num_heads, attn_drop, proj_drop)
+            for _ in range(4)
         ])
 
-        # Final fusion layer
-        self.fusion_layer = nn.Sequential(
-            nn.Conv2d(dim*4, dim, kernel_size=1),
-            nn.BatchNorm2d(dim),
-            nn.GELU()
-        )
+        # Fusion: concat 4 enhanced streams -> project to dim
+        self.fusion_conv = nn.Conv2d(dim * 4, dim, kernel_size=1)
+        self.fusion_bn = nn.BatchNorm2d(dim)
+        self.fusion_act = nn.GELU()
+        
+        # # Gate mechanism after fusion
+        # self.gate = nn.Sequential(
+        #     nn.Conv2d(dim, dim, kernel_size=1),
+        #     nn.Sigmoid()
+        # )
 
-        # T1: Add gate after soft attention
-        self.gate = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=1),
-            nn.Sigmoid()  # Gate values between 0 and 1
-        )
-
-        # Add a feed-forward network with scaling factor as mentioned in your paper
+        # FFN with Pre-Norm
+        self.ffn_norm = nn.BatchNorm2d(dim)
         self.ffn = nn.Sequential(
-            nn.Conv2d(dim, dim*4, kernel_size=1),
+            nn.Conv2d(dim, dim * 4, kernel_size=1),
             nn.GELU(),
-            nn.Conv2d(dim*4, dim, kernel_size=1)
+            nn.Dropout(proj_drop),
+            nn.Conv2d(dim * 4, dim, kernel_size=1),
+            nn.Dropout(proj_drop),
         )
         self.gamma_ffn = nn.Parameter(torch.zeros(1))
 
@@ -335,51 +366,45 @@ class CrossStreamFusion(nn.Module):
         Returns:
             fused_features: tensor with shape [B, C, H, W]
         """
-        B, C, H, W = features[0].shape
         enhanced_features = []
 
-        # For each stream as master
+        # Each stream as master, attend to all other streams simultaneously
         for i in range(4):
             master = features[i]
-            cross_attended = []
+            others = [features[j] for j in range(4) if j != i]
+            
+            # Each stream uses its own cross-attention module
+            enhanced = self.cross_attentions[i](master, others)
+            enhanced_features.append(enhanced)
 
-            # Cross-attend with all other streams as slaves
-            slave_idx = 0
-            for j in range(4):
-                if j != i:
-                    # Apply bidirectional cross-attention between master and slave
-                    attended = self.cross_attentions[i][slave_idx](
-                        master, features[j])
-                    cross_attended.append(attended)
-                    slave_idx += 1
+        # Concatenate all 4 enhanced features and project
+        fused = torch.cat(enhanced_features, dim=1)  # [B, 4C, H, W]
+        fused = self.fusion_conv(fused)
+        fused = self.fusion_bn(fused)
+        fused = self.fusion_act(fused)
+        
+        # Gate mechanism
+        # gate_values = self.gate(fused)
+        # fused = fused * gate_values
 
-            # Average the cross-attended features
-            master_enhanced = torch.stack(cross_attended).mean(dim=0)
-            enhanced_features.append(master_enhanced)
-
-        # Concatenate all enhanced features
-        fused = torch.cat(enhanced_features, dim=1)
-        fused = self.fusion_layer(fused)
-
-        # T1: Apply gate mechanism after soft attention
-        gate_values = self.gate(fused)
-        fused = fused * gate_values
-
-        # Apply feed-forward network with scaling
-        # fused = fused + torch.tanh(self.gamma_ffn) * self.ffn(fused)
-        fused = fused + self.gamma_ffn * self.ffn(fused)
+        # FFN with pre-norm and residual
+        ffn_out = self.ffn(self.ffn_norm(fused))
+        fused = fused + torch.tanh(self.gamma_ffn) * ffn_out
 
         return fused
 
-
 class Model(nn.Module):
+    """
+    VERSION T1: Enhanced with Gate mechanism after soft attention in fusion layer
+    Use this model to test T1 enhancement only
+    """
     def __init__(self):
         super(Model, self).__init__()
 
         # Define the backbone
         self.base_model = BaseModel()
 
-        # Define the cross-stream fusion module (replacing the concatenation and reduction)
+        # T1: Enhanced cross-stream fusion with gating
         self.cross_stream_fusion = CrossStreamFusion(dim=144, num_heads=8)
 
         # Define the self attention part
@@ -400,7 +425,7 @@ class Model(nn.Module):
                     pos[0, d] = np.cos(i / (10000 ** (2 * (d // 2) / 144)))
             self.patch_pos_embed.append(nn.Parameter(pos, requires_grad=True))
 
-        # Define the fully connected layers for angles
+        # Original Linear prediction heads
         self.yaw_class = nn.Linear(144, 66)
         self.pitch_class = nn.Linear(144, 66)
         self.roll_class = nn.Linear(144, 66)
@@ -413,7 +438,7 @@ class Model(nn.Module):
             _, _, x3 = self.base_model(x_parts[i])
 
             # Add positional embedding
-            pos_embed = self.patch_pos_embed[i]
+            pos_embed = self.patch_pos_embed[i].to(x3.device)
             if torch.isnan(pos_embed).any() or torch.isinf(pos_embed).any():
                 raise ValueError(
                     f"Positional embedding for patch {i} contains NaN or Inf values.")
@@ -426,19 +451,22 @@ class Model(nn.Module):
 
             x_features.append(x3)
 
-        # 2. Apply cross-stream fusion with bidirectional cross-attention
+        # 2. Apply T1: Enhanced cross-stream fusion with gating
         x4 = self.cross_stream_fusion(x_features)
 
         # 3. Apply self-attention for further refinement
         x4 = self.convolutional_multihead_attention(x4)
 
-        # 4. Multibin classification and regression
-        # Pool down to (B, 144, 1, 1) and flatten to (B, 144)
+        # 4. Pool down to (B, 144, 1, 1) and flatten to (B, 144)
         x5 = self.pool(x4).flatten(1)
 
-        # 5. Predict angle bins
+        # 5. Predict angle bins using original Linear layers
         yaw_class = self.yaw_class(x5)
         pitch_class = self.pitch_class(x5)
         roll_class = self.roll_class(x5)
 
         return yaw_class, pitch_class, roll_class
+
+
+
+    
