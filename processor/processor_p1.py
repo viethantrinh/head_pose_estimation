@@ -7,7 +7,7 @@ import yaml
 import torch.nn.functional as F
 import numpy as np
 
-from model.bcam_all_gate.bcam_model_light_g2_self_attention import *
+from model.bi_directional_cross_attention.ca_model_all_stable_light import *
 from utils.util import GradualWarmupScheduler, log, init_seed, worker_init_fn
 from torch import optim
 from feeder import dataset_p1 as dataset
@@ -31,13 +31,6 @@ class Processor:
 
         # 2. Save the current information of config file into a file
         # self.save_train_config_file()
-
-        # 3. Early stopping parameters (must be set before load_optimizer)
-        # Early stopping patience
-        self.patience = getattr(self.arg, 'patience', 300)
-        self.no_improve_epochs = 0
-        # Minimum learning rate
-        self.min_lr = getattr(self.arg, 'min_lr', 1e-7)
 
         # 4. Load the model
         self.load_model()
@@ -100,7 +93,7 @@ class Processor:
         self.model = Model().cuda(output_device)  # initialize the model to GPU
 
     def load_optimizer(self):
-        """Initialize optimizer and scheduler from config with advanced scheduling strategies."""
+        """Initialize optimizer and scheduler from config."""
         self.optimizer = optim.AdamW(
             self.model.parameters(),
             lr=self.arg.base_lr,
@@ -111,73 +104,22 @@ class Processor:
             eps=self.arg.eps if hasattr(self.arg, 'eps') else 1e-8
         )
 
-        # Choose scheduler type from config
-        scheduler_type = getattr(self.arg, 'scheduler_type', 'multistep')
+        lr_scheduler_pre = optim.lr_scheduler.MultiStepLR(
+            self.optimizer,
+            milestones=self.arg.step if hasattr(
+                self.arg, 'step') else [10, 20],
+            gamma=0.5
+        )
 
-        if scheduler_type == 'cosine':
-            # Cosine Annealing with restarts - more effective than MultiStepLR
-            lr_scheduler_pre = optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                self.optimizer,
-                T_0=getattr(self.arg, 'T_0', 20),  # Initial restart period
-                # Multiply restart period
-                T_mult=getattr(self.arg, 'T_mult', 2),
-                eta_min=self.min_lr
-            )
-            self.print_log(
-                f'Using CosineAnnealingWarmRestarts scheduler with T_0={getattr(self.arg, "T_0", 20)}, T_mult={getattr(self.arg, "T_mult", 2)}')
-
-        elif scheduler_type == 'plateau':
-            # ReduceLROnPlateau - reduces LR when metric stops improving
-            lr_scheduler_pre = optim.lr_scheduler.ReduceLROnPlateau(
-                self.optimizer,
-                mode='min',
-                factor=getattr(self.arg, 'lr_factor', 0.5),
-                patience=getattr(self.arg, 'lr_patience', 5),
-                min_lr=self.min_lr,
-                verbose=True
-            )
-            self.print_log(
-                f'Using ReduceLROnPlateau scheduler with factor={getattr(self.arg, "lr_factor", 0.5)}, patience={getattr(self.arg, "lr_patience", 5)}')
-
-        elif scheduler_type == 'multistep':
-            # Original MultiStepLR
-            lr_scheduler_pre = optim.lr_scheduler.MultiStepLR(
-                self.optimizer,
-                milestones=self.arg.step if hasattr(
-                    self.arg, 'step') else [15, 25, 35],
-                gamma=getattr(self.arg, 'gamma', 0.5)
-            )
-            self.print_log(
-                f'Using MultiStepLR scheduler with milestones={getattr(self.arg, "step", [15, 25, 35])}, gamma={getattr(self.arg, "gamma", 0.5)}')
-
-        else:  # exponential
-            # Exponential decay
-            lr_scheduler_pre = optim.lr_scheduler.ExponentialLR(
-                self.optimizer,
-                gamma=getattr(self.arg, 'exp_gamma', 0.95)
-            )
-            self.print_log(
-                f'Using ExponentialLR scheduler with gamma={getattr(self.arg, "exp_gamma", 0.95)}')
-
-        # Store the pre-scheduler for later use in plateau mode
-        self.lr_scheduler_pre = lr_scheduler_pre
-        self.scheduler_type = scheduler_type
-
-        # Apply warm-up only for non-plateau schedulers
-        if scheduler_type != 'plateau':
-            self.lr_scheduler = GradualWarmupScheduler(
-                self.optimizer,
-                total_epoch=self.arg.warm_up_epoch if hasattr(
-                    self.arg, 'warm_up_epoch') else 5,
-                after_scheduler=lr_scheduler_pre
-            )
-        else:
-            self.lr_scheduler = lr_scheduler_pre
+        self.lr_scheduler = GradualWarmupScheduler(
+            self.optimizer,
+            total_epoch=self.arg.warm_up_epoch if hasattr(
+                self.arg, 'warm_up_epoch') else 5,
+            after_scheduler=lr_scheduler_pre
+        )
 
         self.print_log(
             f'Using warm-up scheduler, total warm-up epochs: {self.arg.warm_up_epoch if hasattr(self.arg, "warm_up_epoch") else 5}')
-        self.print_log(f'Early stopping patience: {self.patience} epochs')
-        self.print_log(f'Minimum learning rate: {self.min_lr}')
 
     def load_data(self):
         self.data_loader = {}
@@ -232,7 +174,7 @@ class Processor:
 
     def train(self, epoch, is_save_model=False):
         self.model.train()
-
+        
         # Set some config for faster computation and reproducibility
         cudnn.enabled = True
         cudnn.deterministic = False
@@ -244,9 +186,9 @@ class Processor:
         total = 0
         idx_tensor = torch.arange(
             66, dtype=torch.float32).cuda(self.output_device)
-
+        
         process = tqdm(loader, desc=f'Epoch {epoch + 1}/{self.arg.num_epoch}')
-
+        
         for batch_idx, (img, euler_label, labels, index) in enumerate(process):
             # [dim0, dim1, dim2, dim3] - [number_of_samples (batch_size), channel, height, width]
             batch_size = img.size(dim=0)
@@ -355,21 +297,12 @@ class Processor:
         mean_roll_error = roll_error / total
 
         self.print_log(f'\tMean training loss: {mean_loss:.4f}')
-        self.print_log(
-            f'\tLearning rate: {self.optimizer.param_groups[0]["lr"]:.6f}')
+        self.print_log(f'\tLearning rate: {self.lr:.6f}')
         self.print_log(f'\tYaw MAE: {mean_yaw_error:.4f}')
         self.print_log(f'\tPitch MAE: {mean_pitch_error:.4f}')
         self.print_log(f'\tRoll MAE: {mean_roll_error:.4f}')
 
-        # Only step non-plateau schedulers here
-        if self.scheduler_type != 'plateau':
-            self.lr_scheduler.step()
-
-        # Return training metrics for plateau scheduler
-        return {
-            'loss': mean_loss,
-            'mae': (mean_yaw_error + mean_pitch_error + mean_roll_error) / 3
-        }
+        self.lr_scheduler.step(epoch)
 
         if is_save_model:
             state_dict = self.model.state_dict()
@@ -519,12 +452,6 @@ class Processor:
         self.print_log(
             "======================================================================================")
 
-        # Return metrics for scheduler and early stopping
-        return {
-            'test1_mae': self.best_mae_test1 if hasattr(self, 'best_mae_test1') else float('inf'),
-            'test2_mae': self.best_mae_test_2 if hasattr(self, 'best_mae_test_2') else float('inf')
-        }
-
     def wrapped_loss(self, pred, target):
         """Compute wrapped loss for cyclic angles using 360-degree cycle, as described in the paper."""
         diff = pred - target
@@ -556,80 +483,12 @@ class Processor:
                 patches.append(patch)
         return patches
 
-    def check_early_stopping(self, current_mae):
-        """Check if training should stop early based on validation MAE."""
-        if current_mae < self.best_mae_test_2:
-            self.no_improve_epochs = 0
-            return False
-        else:
-            self.no_improve_epochs += 1
-            if self.no_improve_epochs >= self.patience:
-                self.print_log(
-                    f'\tEarly stopping triggered after {self.patience} epochs without improvement')
-                return True
-            else:
-                self.print_log(
-                    f'\tNo improvement for {self.no_improve_epochs}/{self.patience} epochs')
-                return False
-
-    def adjust_learning_rate_on_plateau(self, metric):
-        """Adjust learning rate for plateau scheduler."""
-        if self.scheduler_type == 'plateau':
-            self.lr_scheduler.step(metric)
-
-    def get_current_lr(self):
-        """Get current learning rate."""
-        return self.optimizer.param_groups[0]['lr']
-
-    def check_lr_threshold(self):
-        """Check if learning rate has reached minimum threshold."""
-        current_lr = self.get_current_lr()
-        if current_lr <= self.min_lr:
-            self.print_log(
-                f'\tLearning rate {current_lr:.2e} reached minimum threshold {self.min_lr:.2e}')
-            return True
-        return False
-
     def start(self):
         self.print_log(
             f"Start training from epoch {self.arg.start_epoch + 1} to {self.arg.num_epoch}")
-        self.print_log(f"Early stopping patience: {self.patience} epochs")
-        self.print_log(f"Scheduler type: {self.scheduler_type}")
-
         for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
             is_save_model = ((epoch + 1) % self.arg.save_interval ==
                              0) or (epoch + 1 == self.arg.num_epoch)
-
-            # Training phase
-            train_metrics = self.train(epoch, is_save_model=is_save_model)
-
-            # Evaluation phase
-            eval_metrics = self.eval(epoch)
-
-            # Handle learning rate scheduling
-            if self.scheduler_type == 'plateau':
-                # Use test2 MAE for plateau scheduler
-                self.adjust_learning_rate_on_plateau(eval_metrics['test2_mae'])
-
-            # Check early stopping conditions
-            early_stop = self.check_early_stopping(eval_metrics['test2_mae'])
-            lr_threshold_reached = self.check_lr_threshold()
-
-            if early_stop or lr_threshold_reached:
-                reason = "early stopping" if early_stop else "minimum learning rate reached"
-                self.print_log(
-                    f"Training terminated at epoch {epoch + 1} due to {reason}")
-                break
-
-            # Clear GPU cache
+            self.train(epoch, is_save_model=is_save_model)
+            self.eval(epoch)
             torch.cuda.empty_cache()
-
-        # Final summary
-        self.print_log("="*80)
-        self.print_log("TRAINING COMPLETED!")
-        self.print_log(f"Final learning rate: {self.get_current_lr():.2e}")
-        self.print_log(
-            f"Best Test1 MAE: {self.best_mae_test1:.4f} at epoch {self.best_epoch_test1 + 1}")
-        self.print_log(
-            f"Best Test2 MAE: {self.best_mae_test_2:.4f} at epoch {self.best_epoch_test_2 + 1}")
-        self.print_log("="*80)

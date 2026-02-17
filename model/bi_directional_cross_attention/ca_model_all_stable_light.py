@@ -213,16 +213,15 @@ class BaseModel(nn.Module):
         return x1, x2, x3
 
 class CrossAttention(nn.Module):
-    def __init__(self, dim, num_heads=8):
+    def __init__(self, dim, num_heads=4):
         super(CrossAttention, self).__init__()
-        self.num_heads = num_heads
-        head_dim = dim // num_heads
-        self.scale = head_dim ** -0.5
-        
-        self.q_proj = nn.Linear(dim, dim)
-        self.k_proj = nn.Linear(dim, dim)
-        self.v_proj = nn.Linear(dim, dim)
-        self.out_proj = nn.Linear(dim, dim)
+        # Use PyTorch's built-in MultiheadAttention for cross-attention
+        self.multihead_attn = nn.MultiheadAttention(
+            embed_dim=dim, 
+            num_heads=num_heads, 
+            batch_first=False,
+            dropout=0.1
+        )
         
     def forward(self, query, key_value):
         """
@@ -234,31 +233,20 @@ class CrossAttention(nn.Module):
         """
         batch_size, C, H, W = query.shape
         
-        # Reshape for attention computation
-        q = self.q_proj(query.flatten(2).transpose(1, 2))  # [B, H*W, C]
-        k = self.k_proj(key_value.flatten(2).transpose(1, 2))  # [B, H*W, C]
-        v = self.v_proj(key_value.flatten(2).transpose(1, 2))  # [B, H*W, C]
+        # Reshape to [L, B, C] format for nn.MultiheadAttention
+        q = query.flatten(2).permute(2, 0, 1)  # [H*W, B, C]
+        kv = key_value.flatten(2).permute(2, 0, 1)  # [H*W, B, C]
         
-        # Reshape for multi-head attention
-        q = q.reshape(batch_size, H*W, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)  # [B, num_heads, H*W, C/num_heads]
-        k = k.reshape(batch_size, H*W, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
-        v = v.reshape(batch_size, H*W, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        # Apply built-in cross-attention (query from q, key and value from kv)
+        x, _ = self.multihead_attn(q, kv, kv)  # [H*W, B, C]
         
-        # Compute attention
-        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale  # [B, num_heads, H*W, H*W]
-        attn = F.softmax(attn, dim=-1)
-        
-        # Apply attention weights
-        x = torch.matmul(attn, v).transpose(1, 2).reshape(batch_size, H*W, C)  # [B, H*W, C]
-        x = self.out_proj(x)
-        
-        # Reshape back to spatial dimensions
-        x = x.transpose(1, 2).reshape(batch_size, C, H, W)
+        # Reshape back to spatial dimensions [B, C, H, W]
+        x = x.permute(1, 2, 0).reshape(batch_size, C, H, W)
         
         return x
 
 class BidirectionalCrossAttention(nn.Module):
-    def __init__(self, dim, num_heads=8):
+    def __init__(self, dim, num_heads=4):
         super(BidirectionalCrossAttention, self).__init__()
         self.cross_attn = CrossAttention(dim, num_heads)
         self.proj = nn.Conv2d(dim*2, dim, kernel_size=1)
@@ -286,7 +274,7 @@ class BidirectionalCrossAttention(nn.Module):
 
 
 class CrossStreamFusion(nn.Module):
-    def __init__(self, dim, num_heads=8):
+    def __init__(self, dim, num_heads=4):
         super(CrossStreamFusion, self).__init__()
         self.dim = dim
 
@@ -358,7 +346,7 @@ class Model(nn.Module):
         self.base_model = BaseModel()
 
         # Define the cross-stream fusion module with parameter optimization (shared cross-attention)
-        self.cross_stream_fusion = CrossStreamFusion(dim=144, num_heads=8)
+        self.cross_stream_fusion = CrossStreamFusion(dim=144, num_heads=4)
 
         # Define the self attention part
         self.convolutional_multihead_attention = ConvolutionalMultiheadAttention(
