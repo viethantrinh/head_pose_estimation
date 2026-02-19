@@ -183,7 +183,7 @@ class BaseModel(nn.Module):
 
         # pooling H va W xuong con H' va W'. Chia cho 2
         self.pool = nn.AvgPool2d(kernel_size=2)
-        self.dropout = nn.Dropout(p=0.5)
+        self.dropout = nn.Dropout(p=0.2)
 
     def forward(self, x):
         x11 = self.conv11(x)
@@ -213,7 +213,7 @@ class BaseModel(nn.Module):
         return x1, x2, x3
 
 class CrossAttention(nn.Module):
-    def __init__(self, dim, num_heads=8):
+    def __init__(self, dim, num_heads=4):
         super(CrossAttention, self).__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
@@ -259,47 +259,18 @@ class CrossAttention(nn.Module):
         x = x.transpose(1, 2).reshape(batch_size, C, H, W)
         
         # Add residual connection with learnable scaling
-        x = query + torch.tanh(self.gamma) * x
+        x = query + self.gamma * x
         
         return x
-
-class BidirectionalCrossAttention(nn.Module):
-    def __init__(self, dim, num_heads=4):
-        super(BidirectionalCrossAttention, self).__init__()
-        self.cross_attn = CrossAttention(dim, num_heads)
-        self.proj = nn.Conv2d(dim*2, dim, kernel_size=1)
-        # Learnable scaling parameter
-        self.gamma = nn.Parameter(torch.zeros(1))
-
-    def forward(self, x1, x2):
-        """
-        Bidirectional cross-attention between x1 and x2
-        """
-        # x1 as query, x2 as key/value
-        x1_to_x2 = self.cross_attn(x1, x2)
-
-        # x2 as query, x1 as key/value
-        x2_to_x1 = self.cross_attn(x2, x1)
-
-        # Concatenate and project
-        x_cat = torch.cat([x1_to_x2, x2_to_x1], dim=1)
-        x_fused = self.proj(x_cat)
-
-        # Apply scaling and residual connection to x1
-        x1_out = x1 + torch.tanh(self.gamma) * x_fused
-
-        return x1_out
-
     
 class CrossStreamFusion(nn.Module):
-    def __init__(self, dim, num_heads=8, num_streams=4):
+    def __init__(self, dim, num_heads=4):
         super(CrossStreamFusion, self).__init__()
         self.dim = dim
 
         # OPTIMIZATION: Use shared bidirectional cross-attention for all stream pairs
         # This reduces parameters from 12 separate modules (4×3) to just 1 shared module
-        self.shared_cross_attention = CrossAttention(
-            dim, num_heads)
+        self.shared_cross_attention = CrossAttention(dim, num_heads)
 
         # Final fusion layer
         self.fusion_layer = nn.Sequential(
@@ -343,10 +314,6 @@ class CrossStreamFusion(nn.Module):
             # Average the cross-attended features
             if cross_attended:
                 master_enhanced = torch.stack(cross_attended).mean(dim=0)
-                # weights = F.softmax(self.stream_weights[i], dim=0)  # [3]
-                # master_enhanced = sum(
-                #     w * feat for w, feat in zip(weights, cross_attended)
-                # )
             else:
                 master_enhanced = master
             enhanced_features.append(master_enhanced)
@@ -356,7 +323,7 @@ class CrossStreamFusion(nn.Module):
         fused = self.fusion_layer(fused)
 
         # # Apply feed-forward network with scaling
-        fused = fused + torch.tanh(self.gamma_ffn) * self.ffn(fused)
+        fused = fused + self.gamma_ffn * self.ffn(fused)
 
         return fused
 
@@ -369,11 +336,11 @@ class Model(nn.Module):
         self.base_model = BaseModel()
 
         # Define the cross-stream fusion module with parameter optimization (shared cross-attention)
-        self.cross_stream_fusion = CrossStreamFusion(dim=144, num_heads=8)
+        self.cross_stream_fusion = CrossStreamFusion(dim=144, num_heads=4)
 
         # Define the self attention part
-        self.convolutional_multihead_attention = ConvolutionalMultiheadAttention(
-            in_channels=144)
+        # self.convolutional_multihead_attention = ConvolutionalMultiheadAttention(
+        #     in_channels=144)
 
         # Define the adaptive pooling for desired output size
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
@@ -419,7 +386,7 @@ class Model(nn.Module):
         x4 = self.cross_stream_fusion(x_features)
 
         # 3. Apply self-attention for further refinement
-        x4 = self.convolutional_multihead_attention(x4)
+        # x4 = self.convolutional_multihead_attention(x4)
 
         # 4. Multibin classification and regression
         # Pool down to (B, 144, 1, 1) and flatten to (B, 144)

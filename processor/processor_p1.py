@@ -27,7 +27,7 @@ class Processor:
         self.arg = arg
 
         # 1. Fix the seed to 1
-        # init_seed(21)
+        init_seed(1)
 
         # 2. Save the current information of config file into a file
         # self.save_train_config_file()
@@ -151,7 +151,7 @@ class Processor:
             # the amount of parallel thread used to load the data
             num_workers=self.arg.num_worker,
             drop_last=True,  # if the batch size is not enough cover then ignore
-            worker_init_fn=init_seed
+            worker_init_fn=worker_init_fn
         )
 
         self.data_loader[TEST_DATA_1] = DataLoader(
@@ -160,7 +160,7 @@ class Processor:
             shuffle=False,  # test => don't need to shuffle
             num_workers=self.arg.num_worker,
             drop_last=False,  # test all the data, no need drop last
-            worker_init_fn=init_seed
+            worker_init_fn=worker_init_fn
         )
 
         self.data_loader[TEST_DATA_2] = DataLoader(
@@ -169,7 +169,7 @@ class Processor:
             shuffle=False,  # test => don't need to shuffle
             num_workers=self.arg.num_worker,
             drop_last=False,  # test all the data, no need drop last
-            worker_init_fn=init_seed
+            worker_init_fn=worker_init_fn
         )
 
     def train(self, epoch, is_save_model=False):
@@ -177,8 +177,8 @@ class Processor:
         
         # Set some config for faster computation and reproducibility
         cudnn.enabled = True
-        cudnn.deterministic = False
-        cudnn.benchmark = True
+        cudnn.deterministic = True
+        cudnn.benchmark = False
 
         loader = self.data_loader[TRAIN_DATA]
         loss_value = []
