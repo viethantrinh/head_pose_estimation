@@ -31,7 +31,7 @@ test_file_name1: ./file_list/protocol_2/BIWI_test.txt
 # Optimizer Settings
 # optimizer: AdamW
 base_lr: 0.001
-weight_decay: 1.0e-08
+weight_decay: 1.e-4
 
 # Learning Rate Schedule
 step: [50, 90, 130]
@@ -41,6 +41,6 @@ step: [50, 90, 130]
 # step: [2, 3]
 
 # Batch and Epoch Settings
-batch_size: 100
-test_batch_size: 100
+batch_size: 128
+test_batch_size: 128
 num_epoch: 5000
